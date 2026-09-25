@@ -1,0 +1,47 @@
+# MineGuardAI local production-style stack.
+# Usage: docker compose up --build
+# Secrets come from a root .env file (gitignored) — never hardcode them here.
+# Requires: POSTGRES_PASSWORD, JWT_SECRET_KEY. Supabase users can skip the db
+# service and set DATABASE_URL to their Supabase connection string instead.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mineguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: mineguardai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mineguard -d mineguardai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      DATABASE_URL: postgresql://mineguard:${POSTGRES_PASSWORD}@db:5432/mineguardai
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      DEBUG: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
