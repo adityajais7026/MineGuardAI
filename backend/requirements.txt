@@ -1,0 +1,27 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Configuration ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+
+# --- Database (SQLAlchemy core; Supabase PostgreSQL via DATABASE_URL) ---
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+supabase==2.11.0
+
+# --- Auth / security ---
+# bcrypt pinned <5: passlib 1.7.4 is incompatible with bcrypt 5.x API changes.
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]==3.3.0
+
+# --- HTTP client (external data ingestion, Supabase Auth adapter) ---
+httpx==0.28.1
+
+# --- Testing ---
+pytest==8.3.4
+httpx==0.28.1

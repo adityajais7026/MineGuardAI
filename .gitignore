@@ -1,0 +1,35 @@
+# Frontend build artifacts
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*.local
+
+# Backend
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.db
+*.sqlite3
+.env
+snapshots/
+
+# AI model artifacts (never commit model weights)
+ai/yolo/models/*.pt
+*.onnx
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+*.tsbuildinfo
+.freebuff/
