@@ -1,1 +1,4 @@
-"""Services package: business logic layer (compliance engine, risk scoring, etc.)."""
+"""Services package: business logic and reusable data access."""
+from app.services.crud import CrudService
+
+__all__ = ["CrudService"]
