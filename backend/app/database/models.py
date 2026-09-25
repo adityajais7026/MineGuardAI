@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
 )
@@ -200,6 +201,11 @@ class CameraEvent(Base):
     model_version: Mapped[str | None] = mapped_column(String(60), nullable=True)
     image_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
     video_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Media-processing metadata (added in the YOLO-enhancement phase; nullable
+    # so all pre-existing rows remain valid without migration).
+    frame_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_timestamp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_media_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 

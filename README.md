@@ -166,21 +166,67 @@ Levels: 0–24 LOW · 25–49 MEDIUM · 50–74 HIGH · 75–100 CRITICAL.
 The response includes per-factor breakdown and a disclaimer that this is a project
 heuristic, **not** ML and **not** a validated safety model.
 
-## AI / YOLO integration
+## AI / YOLO integration — REAL inference on uploaded media
 
-Current behavior: **simulated camera events only.** `GET /api/ai/detector` reports the active
-backend; `POST /api/ai/simulate-event` generates one labelled-simulated event and routes it
-through the pipeline (restricted-zone/high-severity events raise alerts with dedupe).
+MineGuardAI runs **real YOLO object detection** (Ultralytics) on uploaded images and videos,
+alongside the original clearly-labelled simulated event generator.
 
-To enable real inference later:
+### Two detection paths
 
-1. `pip install ultralytics opencv-python`
-2. Place trained weights (classes named e.g. `person_without_helmet`, `fire_smoke`) at
-   `ai/yolo/models/best.pt`
-3. Set `AI_DETECTOR=yolo` in `backend/.env`
-4. `YOLODetector` then runs real frames; detections are labelled `detection_source="yolo"`.
-   Missing packages/weights → logged warning + automatic simulated fallback (never fabricated
-   detections). OpenCV helpers live under `ai/opencv/` for frame capture/pre-processing.
+| | Simulated | **Real YOLO** |
+|---|---|---|
+| Endpoint | `POST /api/ai/simulate-event` | `POST /api/ai/detect/image` · `POST /api/ai/detect/video` |
+| Needs | nothing | model weights + `AI_DETECTOR=yolo` |
+| `detection_source` | `simulated` | `yolo` |
+| Alert `source` | `camera_pipeline` | `yolo` |
+| UI badge | SIMULATED | YOLO |
+
+Both store into the same `camera_events` table and flow into alerts → risk → dashboard.
+
+### Real detection workflow
+
+1. User uploads image/video on the Camera Events page (mine, optional restricted zone,
+   confidence threshold, frame stride for video).
+2. Backend validates (MIME declaration + **magic bytes**, size caps, mine/zone binding).
+3. Ultralytics YOLO runs real inference (yolo11n by default; configurable via `YOLO_MODEL_PATH`).
+4. Annotated image/MP4 is produced and stored (Supabase Storage private bucket when
+   credentials are configured; gitignored local storage otherwise — `storage_provider`
+   in every response says which).
+5. `camera_events` rows are created per detected class/safety rule with bbox, confidence,
+   frame number and video timestamp.
+6. Safety rules over **actual detections** raise alerts (`source="yolo"`, deduplicated):
+   person/vehicle bound to a restricted zone, crowd ≥ `YOLO_CROWD_THRESHOLD`.
+
+### Honesty: object detection ≠ safety violation detection
+
+The pretrained COCO model detects **objects**: person, car, bus, truck, motorcycle, …
+It does **NOT** detect helmets, vests, PPE compliance, falls or "restricted zones" by itself.
+MineGuardAI therefore:
+
+- reports only the classes the model really predicts (never fabricates helmet/vest events from
+  YOLO output),
+- derives zone violations from *legitimate rules over real detections* (a detected **person**
+  inside a zone flagged by the upload context),
+- keeps the architecture ready for a custom-trained model: drop weights with classes like
+  `person_without_helmet` into `ai/yolo/models/` and point `YOLO_MODEL_PATH` at them — the
+  pipeline, storage, events and alerts all work unchanged.
+
+### Setup
+
+```bash
+pip install -r backend/requirements.txt          # includes ultralytics + opencv
+# model weights are NOT in git — download once:
+curl -L -o ai/yolo/models/yolo11n.pt \
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+# or set YOLO_AUTO_DOWNLOAD=true in backend/.env
+```
+
+`backend/.env`: `AI_DETECTOR=yolo` · `YOLO_MODEL_PATH=../ai/yolo/models/yolo11n.pt`
+
+`GET /api/ai/detector` reports both backends honestly:
+`{"configured":"yolo","simulated":{...available:true},"yolo":{...available:true,classes:80}}`
+— with a clear `error` string when weights are missing, and 503 (never fake results) on the
+detect endpoints in that state.
 
 ## Testing
 
@@ -202,11 +248,14 @@ for the SPA, Supabase for the database) and production hardening checklist.
 
 ## Limitations & honesty statement
 
-- **All data is simulated** — the platform is a software-only demonstration; there are no
-  sensor, IoT, CCTV or government-API integrations.
-- No YOLO/OpenCV inference executes unless explicitly enabled with a real model file.
-- No government data source is claimed or connected; the ingestion interface exists as a
-  future integration point only.
+- Environmental readings are **simulated** — there are no physical sensor/IoT/government
+  integrations.
+- **YOLO detection is real** for uploaded media (verified inference, annotated output,
+  storage, events, alerts) but detects only COCO classes; specialised mining-safety classes
+  (helmet/vest/PPE) require a custom-trained model, which the architecture supports.
+- **Supabase PostgreSQL & Storage are fully wired but not connected in this environment**
+  (no credentials) — local dev runs on the SQLite fallback + gitignored local media storage,
+  and every response labels its storage provider. See `.env.example` + `DEPLOYMENT.md` for
+  the exact activation steps.
+- No government data source is claimed or connected.
 - Risk scores are heuristic project scoring, not a certified safety model.
-- Supabase PostgreSQL is the designed production database but is **not connected** in this
-  environment (no credentials) — local dev uses the SQLite fallback.

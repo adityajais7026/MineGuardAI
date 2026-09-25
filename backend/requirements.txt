@@ -23,6 +23,11 @@ python-jose[cryptography]==3.3.0
 # --- HTTP client (external data ingestion, Supabase Auth adapter) ---
 httpx==0.28.1
 
+# --- AI / Computer vision (real YOLO inference; heavy deps) ---
+ultralytics==8.4.163
+opencv-python==5.0.0.93
+# torch/torchvision are pulled in by ultralytics automatically.
+
 # --- Testing ---
 pytest==8.3.4
 httpx==0.28.1

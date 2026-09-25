@@ -12,6 +12,11 @@ export default defineConfig({
         target: process.env.VITE_BACKEND_URL || 'http://localhost:8000',
         changeOrigin: true,
       },
+      // Local storage backend serves media under /media (dev fallback).
+      '/media': {
+        target: process.env.VITE_BACKEND_URL || 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

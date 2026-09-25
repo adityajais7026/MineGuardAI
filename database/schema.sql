@@ -10,6 +10,12 @@
 --
 -- Run in the Supabase SQL Editor, or: psql "$DATABASE_URL" -f database/schema.sql
 -- Simulated data lives in database/seed.sql and is clearly labelled.
+--
+-- EXISTING DEPLOYMENTS: camera_events gained three nullable columns
+-- (frame_number, video_timestamp, source_media_ref). Add them with:
+--   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS frame_number INTEGER;
+--   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS video_timestamp DOUBLE PRECISION;
+--   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS source_media_ref VARCHAR(500);
 -- ============================================================================
 
 BEGIN;
@@ -144,6 +150,10 @@ CREATE TABLE IF NOT EXISTS camera_events (
     model_version    VARCHAR(60),
     image_ref        VARCHAR(500),
     video_ref        VARCHAR(500),
+    -- YOLO media metadata (added additively; nullable -> no migration needed)
+    frame_number     INTEGER,
+    video_timestamp  DOUBLE PRECISION,
+    source_media_ref VARCHAR(500),
     occurred_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_cam_severity CHECK (severity IN ('low', 'medium', 'high', 'critical')),

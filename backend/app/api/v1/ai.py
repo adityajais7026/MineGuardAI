@@ -1,13 +1,16 @@
-"""AI/camera simulation endpoints (Phase 10).
+"""AI/camera simulation endpoints (Phase 10 + YOLO enhancement).
 
-These endpoints make the *simulated* nature of camera events explicit:
-`GET /api/ai/detector` reports which detector backend is configured, and
-`POST /api/ai/simulate-event` generates one clearly-labelled simulated event.
+These endpoints make the detector situation explicit:
+`GET /api/ai/detector` reports which backends are configured and available,
+and `POST /api/ai/simulate-event` generates one clearly-labelled simulated
+event. Real YOLO inference lives under /api/ai/detect/*.
 """
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
 
 from app.ai.detector import get_detector
 from app.core.roles import write_access
@@ -24,8 +27,16 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 @router.get("/detector")
 def detector_info():
-    """Which detector backend is active. 'simulated' means NO real CV model runs."""
-    return get_detector().health()
+    """Active detector backends. Reports REAL YOLO availability honestly:
+    'simulated' means no CV model runs; yolo.available means real inference works."""
+    simulated = get_detector().health()
+    from app.services.yolo_detection import get_yolo_service
+
+    return {
+        "configured": settings.AI_DETECTOR,
+        "simulated": simulated,
+        "yolo": get_yolo_service().model_info(),
+    }
 
 
 @router.post("/simulate-event", response_model=dict, status_code=status.HTTP_201_CREATED)

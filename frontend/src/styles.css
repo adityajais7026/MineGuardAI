@@ -185,6 +185,15 @@ small { color: var(--muted); }
 }
 .login-hint code { display: inline; margin-right: .3rem; }
 
+/* ---- Detection results ---- */
+.detection-results { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: .8rem; }
+.detection-results h4 { margin: .8rem 0 .4rem; font-size: .85rem; color: var(--primary); }
+.media-row { display: flex; gap: 1rem; flex-wrap: wrap; margin: .8rem 0; }
+.media-thumb {
+  max-width: 320px; max-height: 240px; border-radius: 8px; border: 1px solid var(--border);
+  background: #f8fafc;
+}
+
 /* ---- Misc ---- */
 .empty-state {
   text-align: center; color: var(--muted); padding: 2.2rem 1rem;

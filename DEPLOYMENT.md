@@ -17,6 +17,40 @@ accounts. Every secret comes from environment variables; none are committed.
 5. Optional demo data: `database/seed.sql` in the SQL editor, or `python -m app.utils.seed_demo`.
 6. Verify: `GET /api/health/db` → `{"database":"postgresql","connected":true}`.
 
+### 1b. Supabase Storage — camera media bucket (YOLO uploads)
+
+1. **Dashboard → Storage → New bucket**
+   - Name: `mineguard-media` (configurable via `SUPABASE_MEDIA_BUCKET`)
+   - **Public bucket: OFF** — mine camera media must stay private.
+2. The backend uploads via the service-role key (server-side only) under:
+   ```text
+   camera/{mine_id}/images/{uuid}.jpg    original uploaded images
+   camera/{mine_id}/videos/{uuid}.mp4    original uploaded videos
+   camera/{mine_id}/results/{uuid}.png   YOLO-annotated images
+   camera/{mine_id}/results/{uuid}.mp4   YOLO-annotated videos
+   ```
+3. Access: PRIVATE bucket → the backend mints **time-limited signed URLs**
+   (default 1 h) per request. No public ACLs; no service key ever reaches the browser.
+4. Required env: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, optional
+   `SUPABASE_MEDIA_BUCKET` (default `mineguard-media`), `STORAGE_PROVIDER=supabase`.
+5. No SQL policies needed for the bucket: all access flows through the backend
+   (service role bypasses RLS; anon/authenticated roles get no direct storage access).
+6. Without credentials the backend transparently falls back to gitignored local
+   storage (`backend/snapshots/media`, served at `/media/...`) and labels every
+   response `storage_provider: "local"` — uploads never fail silently or pretend.
+
+### 1c. YOLO model weights
+
+Weights are NOT in git. Either download once:
+```bash
+curl -L -o ai/yolo/models/yolo11n.pt \
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+```
+or set `YOLO_AUTO_DOWNLOAD=true` (explicit opt-in) and start the backend.
+Then set `AI_DETECTOR=yolo` + `YOLO_MODEL_PATH` (see `backend/.env.example`).
+Container images: mount weights at `ai/yolo/models/` or bake a custom layer —
+never push weights to a public registry.
+
 ## 2. Backend — FastAPI
 
 **Environment variables (required in production):**

@@ -85,6 +85,10 @@ export interface CameraEvent {
   model_version: string | null
   image_ref: string | null
   video_ref: string | null
+  /** YOLO media metadata (nullable; added in the media-enhancement phase) */
+  frame_number?: number | null
+  video_timestamp?: number | null
+  source_media_ref?: string | null
   occurred_at: string
   created_at: string
 }

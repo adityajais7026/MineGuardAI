@@ -124,7 +124,15 @@ def generate_simulated_event(
     camera_id: str | None = None,
     zone_id: str | None = None,
 ) -> tuple[CameraEvent, Alert | None]:
-    """Convenience wrapper used by the demo endpoint: simulate one event."""
+    """Convenience wrapper used by the demo endpoint: simulate one event.
+
+    ALWAYS uses the SimulatedDetector explicitly — even when AI_DETECTOR=yolo —
+    because this endpoint's contract is a clearly-labelled simulated event.
+    (Bug fix: previously it delegated to get_detector(), which returned the
+    YOLO detector when configured and then failed on the missing frame.)
+    """
+    from app.ai.detector import SimulatedDetector
+
     if camera_id is None:
         zone: RestrictedZone | None = None
         if zone_id is not None:
@@ -132,4 +140,94 @@ def generate_simulated_event(
             if zone is None or zone.mine_id != mine_id:
                 raise ValueError("zone_id does not belong to the given mine")
         camera_id = zone.camera_id if zone and zone.camera_id else f"CAM-{mine_id[:6].upper()}-SIM"
-    return process_detection(db, mine_id=mine_id, camera_id=camera_id, zone_id=zone_id)
+    detection = SimulatedDetector().detect(camera_id)
+    return process_detection(db, mine_id=mine_id, camera_id=camera_id, zone_id=zone_id,
+                             detection=detection)
+
+
+# -------------------------------------------------------------------------- #
+# Real YOLO media pipeline (enhancement phase)                                #
+# -------------------------------------------------------------------------- #
+
+def _find_open_duplicate_yolo(db: Session, camera_id: str, event_type: str) -> Alert | None:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=DUPLICATE_WINDOW_MINUTES)
+    return db.scalar(
+        select(Alert).where(
+            Alert.source == "yolo",
+            Alert.status != "resolved",
+            Alert.created_at >= cutoff,
+            Alert.source_event_id.in_(
+                select(CameraEvent.id).where(
+                    CameraEvent.camera_id == camera_id,
+                    CameraEvent.event_type == event_type,
+                )
+            ),
+        )
+    )
+
+
+def record_yolo_events(
+    db: Session,
+    *,
+    mine_id: str,
+    camera_id: str,
+    zone_id: str | None,
+    zone_name: str | None,
+    event_type: str,
+    severity: str,
+    detected_object: str | None,
+    confidence: float,
+    model_version: str,
+    image_ref: str | None,
+    source_media_ref: str | None,
+    detail: str,
+    frame_number: int | None = None,
+    video_timestamp: float | None = None,
+    raise_alert: bool = True,
+) -> tuple[CameraEvent, Alert | None]:
+    """Persist one real-YOLO event; optionally raise an alert (source='yolo').
+
+    Duplicates suppressed per camera+event_type within the cooldown window.
+    YOLO alerts are labelled source='yolo' — never 'simulated'.
+    """
+    event = CameraEvent(
+        mine_id=mine_id,
+        zone_id=zone_id,
+        camera_id=camera_id,
+        event_type=event_type,
+        detected_object=detected_object,
+        zone_label=zone_name,
+        confidence=max(0.0, min(1.0, confidence)),
+        severity=severity,
+        status="new",
+        detection_source="yolo",
+        model_version=model_version,
+        image_ref=image_ref,
+        source_media_ref=source_media_ref,
+        frame_number=frame_number,
+        video_timestamp=video_timestamp,
+    )
+    db.add(event)
+    db.flush()
+
+    alert: Alert | None = None
+    if raise_alert and _find_open_duplicate_yolo(db, camera_id, event_type) is None:
+        alert = Alert(
+            mine_id=mine_id,
+            alert_type="safety",
+            title=f"{event_type.replace('_', ' ').title()} — {zone_name or camera_id}",
+            description=(
+                f"Real YOLO detection: {detail}. Model {model_version}."
+            ),
+            severity=severity,
+            source="yolo",
+            status="new",
+            source_event_id=event.id,
+        )
+        db.add(alert)
+
+    db.commit()
+    db.refresh(event)
+    if alert is not None:
+        db.refresh(alert)
+    return event, alert

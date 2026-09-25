@@ -5,8 +5,13 @@ def test_detector_factory_defaults_to_simulated():
     from app.ai.detector import SimulatedDetector, get_detector
 
     detector = get_detector()
-    assert isinstance(detector, SimulatedDetector)
-    assert detector.source == "simulated"
+    # get_detector() honours settings: simulated by default, YOLO when configured
+    if detector.source == "yolo":
+        from app.ai.detector import YOLODetector
+        assert isinstance(detector, YOLODetector)
+    else:
+        assert isinstance(detector, SimulatedDetector)
+        assert detector.source == "simulated"
 
 
 def test_simulated_detection_labels_itself_honestly():
@@ -75,8 +80,14 @@ def test_simulate_event_cross_mine_zone_400(client):
 
 
 def test_detector_info_endpoint(client):
+    """The detector endpoint reports BOTH backends honestly."""
     r = client.get("/api/ai/detector")
     assert r.status_code == 200
     body = r.json()
-    assert body["source"] in {"simulated", "yolo"}
-    assert body["available"] is True
+    assert body["configured"] in {"simulated", "yolo"}
+    assert body["simulated"]["available"] is True
+    # yolo block always present with honest availability flag
+    assert body["yolo"]["source"] == "yolo"
+    assert body["yolo"]["available"] in {True, False}
+    if body["yolo"]["available"] is False:
+        assert "error" in body["yolo"]

@@ -52,12 +52,29 @@ class Settings(BaseSettings):
     SEED_ADMIN_PASSWORD: str = "Admin@123"
 
     # --- AI / Computer vision ---
-    # "simulated" -> deterministic simulated detector (default).
-    # "yolo"      -> real YOLO model via app/ai/yolo_detector.py (requires
-    #                ultralytics + opencv-python installed and a model file).
+    # "simulated" -> labelled simulated events (fallback/testing mode).
+    # "yolo"      -> real Ultralytics YOLO inference for uploaded media.
     AI_DETECTOR: str = "simulated"
-    YOLO_MODEL_PATH: str = "ai/yolo/models/best.pt"
+    YOLO_MODEL_PATH: str = "ai/yolo/models/yolo11n.pt"
+    # Auto-download the pretrained model when missing (explicit opt-in).
+    YOLO_AUTO_DOWNLOAD: bool = False
+    # Default inference settings (per-request overrides supported).
+    YOLO_CONFIDENCE: float = 0.35
+    YOLO_IMGSZ: int = 640
+    # Video frame sampling: process every Nth frame.
+    YOLO_FRAME_STRIDE: int = 5
+    # Safety rule: persons detected in one frame/scene before a crowd alert.
+    YOLO_CROWD_THRESHOLD: int = 4
+    # Upload limits (bytes) for /api/ai/detect endpoints.
+    MAX_IMAGE_UPLOAD_MB: int = 10
+    MAX_VIDEO_UPLOAD_MB: int = 100
     CAMERA_SNAPSHOT_DIR: str = "snapshots"
+
+    # --- Supabase Storage (media uploads; requires SUPABASE_URL + key) ---
+    SUPABASE_MEDIA_BUCKET: str = "mineguard-media"
+    # When False (default) the service accepts a pluggable storage backend and
+    # returns local dev URLs instead of failing without credentials.
+    STORAGE_PROVIDER: str = "supabase"  # "supabase" | "local"
 
     # --- Data ingestion (external / government sources) ---
     # Leave empty in development: the ingestion layer then uses the

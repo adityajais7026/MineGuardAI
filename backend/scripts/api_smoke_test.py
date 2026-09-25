@@ -43,6 +43,17 @@ def main() -> int:
     check("GET /api/health/db -> connected", r.status_code == 200 and r.json()["connected"] is True, r.text)
 
     # ------------------------------------------------------------------ #
+    # Phase 11+: all API routes require authentication. Login with the seeded
+    # admin so the CRUD checks below can run (401s are verified in pytest).
+    print("== Auth ==")
+    r = client.post("/api/auth/login", data={"username": "admin@mineguard.ai", "password": "Admin@123"})
+    if r.status_code != 200:
+        print("FATAL: login failed — seed demo data first (python -m app.utils.seed_demo)")
+        return 1
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    check("POST /api/auth/login -> 200", True)
+
+    # ------------------------------------------------------------------ #
     print("== Mines ==")
     r = client.get("/api/mines")
     body = r.json()
@@ -266,15 +277,17 @@ def main() -> int:
     r = client.get("/api/users", params={"role": "admin"})
     check("GET /api/users filters by role", r.status_code == 200 and r.json()["total"] >= 1, r.text[:200])
 
+    import time as _time
+    unique_email = f"smoke-{int(_time.time())}@mineguard.ai"
     r = client.post("/api/users", json={
-        "email": "smoke-test@mineguard.ai", "full_name": "Smoke Test", "role": "safety_officer",
+        "email": unique_email, "full_name": "Smoke Test", "role": "safety_officer",
         "password": "S@moke1234",
     })
     check("POST /api/users -> 201 (no hash exposed)", r.status_code == 201 and "hashed_password" not in r.json(), r.text[:200])
     user_id = r.json().get("id")
 
     r = client.post("/api/users", json={
-        "email": "smoke-test@mineguard.ai", "full_name": "Dup", "password": "S@moke1234",
+        "email": unique_email, "full_name": "Dup", "password": "S@moke1234",
     })
     check("POST duplicate email -> 400", r.status_code == 400, r.text[:200])
 

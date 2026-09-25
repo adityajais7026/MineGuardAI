@@ -21,6 +21,12 @@ snapshots/
 ai/yolo/models/*.pt
 *.onnx
 
+# Uploaded/annotated media (never commit camera media)
+*.mp4
+*.webm
+*.avi
+backend/media/
+
 # IDE / OS
 .vscode/
 .idea/

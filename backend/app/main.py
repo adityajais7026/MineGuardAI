@@ -6,6 +6,7 @@ routers for all entities. Compliance engine, risk scoring, auth/RBAC and the
 AI detector arrive in later phases.
 """
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,19 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(application)
+
+    # --- Local media serving (development storage backend only) ---
+    # Supabase Storage uses signed URLs instead; this mount serves the
+    # gitignored backend/snapshots/media directory when STORAGE falls back.
+    from fastapi.staticfiles import StaticFiles
+
+    media_root = Path(settings.CAMERA_SNAPSHOT_DIR) / "media"
+    media_root.mkdir(parents=True, exist_ok=True)
+    application.mount(
+        "/media",
+        StaticFiles(directory=str(media_root)),
+        name="media",
+    )
 
     # --- CRUD API routers (Phase 4) ---
     for router_module in all_routers:
