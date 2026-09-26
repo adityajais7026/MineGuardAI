@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, cast, func, select
 from sqlalchemy.orm import Session
 
 from app.database.models import (
@@ -125,7 +125,9 @@ def get_dashboard_summary(db: Session, mine_id: str | None = None, days: int = 7
         select(
             func.date(EnvironmentalReading.recorded_at).label("day"),
             EnvironmentalReading.parameter,
-            func.round(func.avg(EnvironmentalReading.value), 1).label("avg_value"),
+            # PostgreSQL requires numeric for round(x, n); cast keeps SQLite
+            # behaviour identical (avg rounded to 1 decimal).
+            func.round(cast(func.avg(EnvironmentalReading.value), Numeric), 1).label("avg_value"),
             func.count().label("n"),
         )
         .where(*trend_cond)
