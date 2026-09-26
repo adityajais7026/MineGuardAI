@@ -8,8 +8,10 @@
 --   psql "$DATABASE_URL" -f database/schema.sql
 --   psql "$DATABASE_URL" -f database/seed.sql
 --
--- The script is IDEMPOTENT (uses explicit UUIDs + ON CONFLICT DO NOTHING),
--- so re-running it will not duplicate rows.
+-- The script is idempotent (ON CONFLICT (id) DO NOTHING): re-running it will
+-- not duplicate rows. Every ID — static and generated — fits the VARCHAR(36)
+-- key columns of schema.sql: readable IDs for readings/events, and
+-- deterministic md5-derived IDs (core PostgreSQL md5()) for alerts.
 -- Demo user passwords (bcrypt hashes of 'Admin@123' / 'Manager@123' /
 -- 'Safety@123' / 'Env@123'):
 --   admin@mineguard.ai      -> Admin@123    (admin)
@@ -66,6 +68,8 @@ ON CONFLICT (id) DO NOTHING;
 -- 5) Environmental readings: 14 days, 6 parameters, every 4 hours per mine
 --    Generates ~1500 rows. status is precomputed to mirror what the backend
 --    compliance engine would set ('normal' | 'violation').
+--    Generated id max length = 35 chars ('r-' + code 8 + parameter 11 + ts 12)
+--    — fits VARCHAR(36).
 -- ----------------------------------------------------------------------------
 INSERT INTO environmental_readings (id, mine_id, parameter, value, unit, threshold, status, source, recorded_at)
 SELECT
@@ -110,10 +114,12 @@ ON CONFLICT (id) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
 -- 6) Camera events (detection_source = 'simulated' — see honesty note above)
+--    The full event_type in the id would overflow VARCHAR(36) (up to 54 chars),
+--    so ids use a 3-char event code + 10-char timestamp: max 29 chars.
 -- ----------------------------------------------------------------------------
 INSERT INTO camera_events (id, mine_id, zone_id, camera_id, event_type, detected_object, zone_label, confidence, severity, status, detection_source, occurred_at)
 SELECT
-  'e-' || z.id || '-' || g.event_type || '-' || to_char(ts, 'YYYYMMDDHH24MI') AS id,
+  'e-' || z.id || '-' || g.ecode || '-' || to_char(ts, 'YYMMDDHH24MI') AS id,
   m.id,
   z.id,
   z.camera_id,
@@ -128,13 +134,13 @@ SELECT
 FROM restricted_zones z
 JOIN mines m ON m.id = z.mine_id
 CROSS JOIN (VALUES
-  ('person_without_helmet',      'person', 'high'),
-  ('person_without_vest',        'person', 'medium'),
-  ('restricted_zone_entry',      'person', 'critical'),
-  ('vehicle_in_restricted_area', 'truck',  'high'),
-  ('fire_smoke',                 'smoke',  'critical'),
-  ('unsafe_crowding',            'group',  'medium')
-) AS g(event_type, detected_object, severity)
+  ('person_without_helmet',      'person', 'high',     'pwh'),
+  ('person_without_vest',        'person', 'medium',   'pwv'),
+  ('restricted_zone_entry',      'person', 'critical', 'rze'),
+  ('vehicle_in_restricted_area', 'truck',  'high',     'vra'),
+  ('fire_smoke',                 'smoke',  'critical', 'fir'),
+  ('unsafe_crowding',            'group',  'medium',   'ucr')
+) AS g(event_type, detected_object, severity, ecode)
 CROSS JOIN LATERAL (
   SELECT generate_series(
     (now() - interval '9 days')::timestamptz,
@@ -156,10 +162,13 @@ ON CONFLICT (id) DO NOTHING;
 -- ----------------------------------------------------------------------------
 -- 7) Alerts — environmental (from readings) + safety (from camera events)
 --    Both with source traceability so the UI can explain every alert.
+--    Reading/event ids themselves approach the 36-char limit, so alert ids
+--    are deterministic md5 derivatives: 'a-env-' + md5(reading id)[1..28],
+--    'a-safety-' + md5(event id)[1..26]  (max 34 / 35 chars).
 -- ----------------------------------------------------------------------------
 INSERT INTO alerts (id, mine_id, alert_type, title, description, severity, source, status, source_reading_id, source_event_id, acknowledged_at, resolved_at, created_at)
 SELECT
-  'a-env-' || r.id                                            AS id,
+  'a-env-' || substr(md5(r.id), 1, 28)                                            AS id,
   r.mine_id,
   'environmental',
   g.rule_name || ' breached at ' || m.name,
@@ -191,7 +200,7 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO alerts (id, mine_id, alert_type, title, description, severity, source, status, source_event_id, acknowledged_at, resolved_at, created_at)
 SELECT
-  'a-safety-' || e.id,
+  'a-safety-' || substr(md5(e.id), 1, 26),
   e.mine_id,
   'safety',
   initcap(replace(e.event_type, '_', ' ')) || ' — ' || z.name,
