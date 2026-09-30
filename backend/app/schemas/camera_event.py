@@ -12,6 +12,19 @@ CameraEventType = Literal[
     "fire_smoke",
     "unsafe_crowding",
     "other",
+    # PPE-model event types (SafetyVision YOLOv8s): each comes ONLY from the
+    # model's own violation/compliance-class detections — never inferred.
+    "person_without_safety_vest",
+    "person_without_gloves",
+    "person_without_goggles",
+    "person_without_mask",
+    "person_without_harness",
+    "fall_detected",
+    "helmet_detected",
+    "safety_vest_detected",
+    "gloves_detected",
+    "goggles_detected",
+    "mask_detected",
 ]
 CameraSeverity = Literal["low", "medium", "high", "critical"]
 CameraEventStatus = Literal["new", "investigating", "resolved"]

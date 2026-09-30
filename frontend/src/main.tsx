@@ -7,6 +7,7 @@ import { AuthProvider } from './context/AuthContext'
 import { RequireAuth } from './components/RequireAuth'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
 import DashboardPage from './pages/DashboardPage'
 import RiskPage from './pages/RiskPage'
 import MinesPage from './pages/MinesPage'
@@ -19,6 +20,7 @@ import InspectionsPage from './pages/InspectionsPage'
 import CorrectiveActionsPage from './pages/CorrectiveActionsPage'
 import ZonesPage from './pages/ZonesPage'
 import CameraEventsPage from './pages/CameraEventsPage'
+import LiveDetectionPage from './pages/LiveDetectionPage'
 import UsersPage from './pages/UsersPage'
 import ProfilePage from './pages/ProfilePage'
 
@@ -28,6 +30,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/" element={<App />} />
             <Route path="/dashboard" element={<DashboardPage />} />
@@ -42,6 +45,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/corrective-actions" element={<CorrectiveActionsPage />} />
             <Route path="/zones" element={<ZonesPage />} />
             <Route path="/camera-events" element={<CameraEventsPage />} />
+            <Route path="/live-detection" element={<LiveDetectionPage />} />
             <Route path="/users" element={<RequireAuth roles={['admin']}><UsersPage /></RequireAuth>} />
             <Route path="/profile" element={<ProfilePage />} />
           </Route>

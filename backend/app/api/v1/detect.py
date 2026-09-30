@@ -1,9 +1,14 @@
 """
-YOLO media-detection endpoints (enhancement phase).
+YOLO media-detection endpoints (enhancement phase + PPE model support).
 
 Flow: authenticated upload -> validation (magic bytes, size, type) ->
-real YOLO inference -> annotated output -> storage -> camera_events ->
-safety-rule alerts -> structured JSON results.
+real YOLO inference (generic COCO model OR fine-tuned PPE model such as
+SafetyVision YOLOv8s — whichever YOLO_MODEL_PATH points to) -> annotated
+output -> storage -> camera_events -> safety-rule alerts -> JSON results.
+
+PPE behaviour: violation events/alerts come ONLY from the model's own
+violation-class detections (e.g. NO-Hardhat). Nothing is renamed, inferred
+from missing detections, or fabricated.
 
 Every response explicitly states the detector used. No fake detections.
 """
@@ -23,7 +28,9 @@ from app.core.roles import write_access
 from app.core.security import get_current_user
 from app.database.models import CameraEvent, Mine, RestrictedZone, User
 from app.database.session import get_db
+from app.services.yolo_detection import PERSON_CLASSES, VEHICLE_CLASSES
 from app.services.camera_pipeline import record_yolo_events
+from app.services.ppe_policy import associate_with_persons, resolve_thresholds
 from app.services.safety_rules import evaluate_safety_rules
 from app.services.storage import (
     ALLOWED_IMAGE_TYPES,
@@ -59,6 +66,76 @@ class DetectionItem(BaseModel):
     frame_number: int | None = None
     timestamp_seconds: float | None = None
     camera_event_id: str | None = None
+
+
+def _person_report(detections, findings, *, person_boxes=None, person_ids=None) -> list[dict] | None:
+    """Person-centric PPE summary: associate the model's own PPE boxes with
+    person boxes and report honest per-person status (never fabricated).
+    UNDETERMINED when the model gives no confident PPE evidence for a person.
+
+    `person_boxes`/`person_ids` (optional) let the live anchor strategy supply
+    COCO-person boxes + ByteTrack IDs; when omitted the behaviour is exactly
+    the pre-anchor one (person boxes derived from the detections themselves).
+    """
+    from app.services.safety_rules import PPE_HANDLED_CLASSES
+
+    th = resolve_thresholds()
+    ppe_boxes = [
+        (d.class_name, d.confidence, d.bbox)
+        for d in detections
+        if d.class_name.lower() in PPE_HANDLED_CLASSES
+    ]
+    if person_boxes is None:
+        person_boxes = [
+            (d.confidence, d.bbox) for d in detections if d.class_name.lower() in PERSON_CLASSES
+        ]
+    if not person_boxes:
+        return None
+    assoc = associate_with_persons(ppe_boxes, person_boxes)
+    violation_by_class: dict[str, str] = {
+        f.detected_class.lower(): f.status for f in findings if f.detected_class
+    }
+    report = []
+    _HELMET_FAMILY = {"hardhat"}
+    _VEST_FAMILY = {"safety vest"}
+    for idx, (pconf, pbox) in enumerate(person_boxes):
+        tid = person_ids[idx] if person_ids and idx < len(person_ids) else None
+        entries = assoc.get(idx, [])
+        statuses = [violation_by_class.get(e["class"].lower(), "compliance") for e in entries]
+        if "violation" in statuses:
+            status = "VIOLATION"
+        elif "undetermined" in statuses:
+            status = "UNDETERMINED"
+        elif entries:
+            # VERDICT HONESTY: single-class evidence (e.g. only a vest, when
+            # ordinary clothing has a measured false-vest mode) is NOT full
+            # compliance — PARTIAL, never PROTECTED.
+            families = {
+                "helmet" if e["class"].lower() in _HELMET_FAMILY
+                else "vest" if e["class"].lower() in _VEST_FAMILY
+                else "other"
+                for e in entries
+            }
+            status = ("PROTECTED" if {"helmet", "vest"} <= families else "PARTIAL")
+        else:
+            status = "UNDETERMINED"
+        report.append({
+            "person_index": idx,
+            "track_id": tid,
+            "person_confidence": round(pconf, 3),
+            "person_bbox": [round(v, 1) for v in pbox],
+            "ppe": [
+                {
+                    "class": e["class"],
+                    "confidence": round(e["confidence"], 3),
+                    "bbox": [round(v, 1) for v in e["bbox"]],
+                    "decision": violation_by_class.get(e["class"].lower(), "compliance"),
+                }
+                for e in entries
+            ],
+            "ppe_status": status,
+        })
+    return report
 
 
 def _validate_mine_zone(db: Session, mine_id: str, zone_id: str | None):
@@ -106,7 +183,11 @@ def _check_actual_type(data: bytes, allowed: dict) -> str:
 
 
 def _detect_for_media(kind: str):
-    """Resolve the configured detector; YOLO required for these endpoints."""
+    """Resolve the configured detector; YOLO required for these endpoints.
+
+    Works with any Ultralytics-detect weights at YOLO_MODEL_PATH (generic
+    COCO or fine-tuned PPE); classes drive the downstream rules honestly.
+    """
     from app.ai.detector import get_detector
 
     if settings.AI_DETECTOR != "yolo":
@@ -144,8 +225,13 @@ def detect_image(
     ext = ALLOWED_IMAGE_TYPES[actual]
     original_path = build_media_path(mine_id, "images", ext)
 
+    # Two-stage PPE policy: infer at the low CAPTURE threshold so genuine
+    # sub-violation-bar detections are not lost, then gate violations per-class
+    # in the rules engine. When unset, capture == YOLO_CONFIDENCE (unchanged).
+    th = resolve_thresholds()
+    effective_conf = confidence if confidence is not None else th.capture
     try:
-        detections, annotated_png = get_yolo_service().detect_image_bytes(data, confidence=confidence)
+        detections, annotated_png = get_yolo_service().detect_image_bytes(data, confidence=effective_conf)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -166,43 +252,74 @@ def detect_image(
     events_out: list[dict[str, Any]] = []
     alerts_out: list[dict[str, Any]] = []
 
+    camera_id = zone.camera_id if zone and zone.camera_id else f"CAM-{mine_id[:6].upper()}-UP"
+
     # One representative event per distinct detected class (bounded, meaningful),
-    # plus an event per safety-rule finding.
+    # plus an event per safety-rule finding. PPE classes are handled from the
+    # model's own detections; unmapped classes keep the object/zone logic.
     best_by_class: dict[str, Any] = {}
     for d in detections:
         if d.class_name not in best_by_class or d.confidence > best_by_class[d.class_name].confidence:
             best_by_class[d.class_name] = d
 
+    def _ppe_finding_for(cls: str, conf: float):
+        cls_lower = cls.lower()
+        for f in findings:
+            if (
+                f.detected_class is not None
+                and f.detected_class.lower() == cls_lower
+                and f.confidence is not None
+                and abs(f.confidence - conf) < 1e-6
+            ):
+                return f
+        return None
+
     for class_name, d in best_by_class.items():
-        is_person = class_name == "person"
-        is_vehicle = class_name in {"car", "truck", "bus", "motorcycle", "bicycle"}
-        raise_alert = (is_person or is_vehicle) and zone is not None
-        if is_person and zone is not None:
-            event_type = "restricted_zone_entry"
-        elif is_vehicle and zone is not None:
-            event_type = "vehicle_in_restricted_area"
+        ppe = _ppe_finding_for(class_name, d.confidence)
+        if ppe is not None:
+            # PPE-worn findings record compliance WITHOUT raising an alert;
+            # violation findings raise one (deduped downstream).
+            event, alert = record_yolo_events(
+                db,
+                mine_id=mine_id, camera_id=camera_id,
+                zone_id=zone.id if zone else None, zone_name=zone.name if zone else None,
+                event_type=ppe.event_type, severity=ppe.severity,
+                detected_object=class_name,
+                confidence=d.confidence,
+                model_version=model_version,
+                image_ref=annotated_obj.path,
+                source_media_ref=original_obj.path,
+                detail=(ppe.evidence + (f" in restricted zone '{zone.name}'" if zone else "")),
+                raise_alert=ppe.alert,
+            )
         else:
-            event_type = "other"
-        # 'other' events record the raw object detection; no alert is raised.
-        finding = findings_by_event_type.get(event_type) if event_type != "other" else None
-        finding = findings_by_event_type.get(event_type)
-        event, alert = record_yolo_events(
-            db,
-            mine_id=mine_id,
-            camera_id=(zone.camera_id if zone and zone.camera_id else f"CAM-{mine_id[:6].upper()}-UP"),
-            zone_id=zone.id if zone else None,
-            zone_name=zone.name if zone else None,
-            event_type=event_type,
-            severity=(finding.severity if finding else ("high" if raise_alert else "medium")),
-            detected_object=class_name,
-            confidence=d.confidence,
-            model_version=model_version,
-            image_ref=annotated_obj.path,
-            source_media_ref=original_obj.path,
-            detail=f"class '{class_name}' conf {d.confidence:.2f} bbox {d.bbox}",
-        )
+            is_person = class_name.lower() in PERSON_CLASSES
+            is_vehicle = class_name.lower() in VEHICLE_CLASSES
+            raise_alert = (is_person or is_vehicle) and zone is not None
+            if is_person and zone is not None:
+                event_type = "restricted_zone_entry"
+            elif is_vehicle and zone is not None:
+                event_type = "vehicle_in_restricted_area"
+            else:
+                event_type = "other"
+            # 'other' events record the raw object detection; no alert is raised.
+            finding = findings_by_event_type.get(event_type) if event_type != "other" else None
+            event, alert = record_yolo_events(
+                db,
+                mine_id=mine_id, camera_id=camera_id,
+                zone_id=zone.id if zone else None, zone_name=zone.name if zone else None,
+                event_type=event_type,
+                severity=(finding.severity if finding else ("high" if raise_alert else "medium")),
+                detected_object=class_name,
+                confidence=d.confidence,
+                model_version=model_version,
+                image_ref=annotated_obj.path,
+                source_media_ref=original_obj.path,
+                detail=f"class '{class_name}' conf {d.confidence:.2f} bbox {d.bbox}",
+            )
         events_out.append({"camera_event_id": event.id, "class": class_name,
-                           "confidence": round(d.confidence, 3), "event_type": event.event_type})
+                           "confidence": round(d.confidence, 3), "event_type": event.event_type,
+                           "ppe_status": ppe.status if ppe else None})
         if alert:
             alerts_out.append({"id": alert.id, "title": alert.title,
                                "severity": alert.severity, "source": alert.source})
@@ -243,7 +360,9 @@ def detect_image(
         "detection_count": len(detections),
         "classes_detected": sorted({d.class_name for d in detections}),
         "safety_findings": [
-            {"rule": f.rule, "event_type": f.event_type, "severity": f.severity, "evidence": f.evidence}
+            {"rule": f.rule, "event_type": f.event_type, "severity": f.severity,
+             "evidence": f.evidence, "status": f.status,
+             "confidence": round(f.confidence, 3) if f.confidence is not None else None}
             for f in findings
         ],
         "annotated_image_url": annotated_url,
@@ -253,6 +372,7 @@ def detect_image(
         "alerts": alerts_out,
         "storage_provider": getattr(original_obj, "provider", "unknown"),
         "uploaded_by": user.email,
+        "person_ppe_report": _person_report(detections, findings),
     }
 
 
@@ -309,9 +429,12 @@ def detect_video(
             raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                                 detail="Video content failed the magic-byte check")
 
+        # Same two-stage policy as images: capture low, gate per-class later.
+        th = resolve_thresholds()
+        effective_conf = confidence if confidence is not None else th.capture
         started = time.time()
         result = get_yolo_service().detect_video_file(
-            tmp_input, confidence=confidence, frame_stride=frame_stride,
+            tmp_input, confidence=effective_conf, frame_stride=frame_stride,
         )
         processing_seconds = round(time.time() - started, 2)
 
@@ -342,10 +465,12 @@ def detect_video(
     events_out: list[dict[str, Any]] = []
     alerts_out: list[dict[str, Any]] = []
 
-    # One event per (rule, first frame where it fired) — bounded and explainable.
+    # One event per (rule, most significant occurrence) — bounded and explainable:
+    # a rule first seen as sub-threshold (undetermined) in frame N must not mask
+    # the same rule crossing the violation bar in frame M — the VIOLATION wins.
     from app.services.yolo_detection import DetectionBox
 
-    handled_rules: set[str] = set()
+    handled_rules: dict[str, str] = {}  # rule -> best status seen (violation > undetermined > compliance)
     for rec in result.frame_records:
         frame_boxes = [
             DetectionBox(
@@ -358,12 +483,18 @@ def detect_video(
             frame_boxes, zone_name=zone.name if zone else None, is_restricted_zone=zone is not None
         )
         for f in frame_findings:
-            if f.rule in handled_rules:
-                continue
-            handled_rules.add(f.rule)
-            # Attribute the event to the object class that actually triggered
-            # the rule (person/vehicle), not an arbitrary first detection.
-            if f.rule == "restricted_zone_person" or f.rule == "crowd_threshold":
+            prev = handled_rules.get(f.rule)
+            if prev == "violation":
+                continue  # already recorded at full severity
+            if prev is not None and f.status != "violation":
+                continue  # already recorded at equal-or-higher significance
+            handled_rules[f.rule] = f.status
+            # PPE findings carry their triggering class + model confidence.
+            # Zone/crowd rules attribute to the best-matching person/vehicle
+            # detection in the same frame.
+            if f.detected_class is not None:
+                subject, top_conf = f.detected_class, (f.confidence or 0.0)
+            elif f.rule == "restricted_zone_person" or f.rule == "crowd_threshold":
                 subject, top_conf = "person", max(
                     (d["confidence"] for d in rec["detections"] if d["class"] == "person"),
                     default=0.0,
@@ -386,11 +517,12 @@ def detect_video(
                 detail=f"{f.evidence} @ {rec['timestamp_seconds']}s (frame {rec['frame_number']})",
                 frame_number=rec["frame_number"],
                 video_timestamp=rec["timestamp_seconds"],
+                raise_alert=f.alert,  # compliance detections record, never alert
             )
             events_out.append({
                 "camera_event_id": event.id, "event_type": event.event_type,
                 "frame_number": rec["frame_number"], "timestamp_seconds": rec["timestamp_seconds"],
-                "rule": f.rule,
+                "rule": f.rule, "ppe_status": f.status,
             })
             if alert:
                 alerts_out.append({"id": alert.id, "title": alert.title,
@@ -420,7 +552,9 @@ def detect_video(
         "classes_detected": sorted(class_counts),
         "class_summary": class_counts,
         "safety_findings": [
-            {"rule": f.rule, "event_type": f.event_type, "severity": f.severity, "evidence": f.evidence}
+            {"rule": f.rule, "event_type": f.event_type, "severity": f.severity,
+             "evidence": f.evidence, "status": f.status,
+             "confidence": round(f.confidence, 3) if f.confidence is not None else None}
             for f in findings
         ],
         "annotated_video_url": storage.create_access_url(annotated_obj.path) if annotated_obj else None,
@@ -430,4 +564,5 @@ def detect_video(
         "alerts": alerts_out,
         "storage_provider": getattr(original_obj, "provider", "unknown"),
         "uploaded_by": user.email,
+        "person_ppe_report": _person_report(result.detections, findings),
     }

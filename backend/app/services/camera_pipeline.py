@@ -149,19 +149,25 @@ def generate_simulated_event(
 # Real YOLO media pipeline (enhancement phase)                                #
 # -------------------------------------------------------------------------- #
 
-def _find_open_duplicate_yolo(db: Session, camera_id: str, event_type: str) -> Alert | None:
+def _find_open_duplicate_yolo(
+    db: Session, camera_id: str, event_type: str,
+    *, detected_object: str | None = None,
+) -> Alert | None:
+    """Open duplicate within the window; optionally keyed by detected_object
+    (person-anchor per-person alerting). None keeps the camera+event_type key."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=DUPLICATE_WINDOW_MINUTES)
+    event_filter = select(CameraEvent.id).where(
+        CameraEvent.camera_id == camera_id,
+        CameraEvent.event_type == event_type,
+    )
+    if detected_object is not None:
+        event_filter = event_filter.where(CameraEvent.detected_object == detected_object)
     return db.scalar(
         select(Alert).where(
             Alert.source == "yolo",
             Alert.status != "resolved",
             Alert.created_at >= cutoff,
-            Alert.source_event_id.in_(
-                select(CameraEvent.id).where(
-                    CameraEvent.camera_id == camera_id,
-                    CameraEvent.event_type == event_type,
-                )
-            ),
+            Alert.source_event_id.in_(event_filter),
         )
     )
 
@@ -184,10 +190,16 @@ def record_yolo_events(
     frame_number: int | None = None,
     video_timestamp: float | None = None,
     raise_alert: bool = True,
+    # OPT-IN (person_anchor strategy): raise the duplicate-suppression key from
+    # camera+event_type to camera+event_type+detected_object so two violating
+    # PEOPLE on one camera each get their own alert. Default None keeps the
+    # existing behaviour byte-identical for every other caller.
+    dedupe_by_object: bool = False,
 ) -> tuple[CameraEvent, Alert | None]:
     """Persist one real-YOLO event; optionally raise an alert (source='yolo').
 
-    Duplicates suppressed per camera+event_type within the cooldown window.
+    Duplicates suppressed per camera+event_type within the cooldown window
+    (per camera+event_type+detected_object when dedupe_by_object=True).
     YOLO alerts are labelled source='yolo' — never 'simulated'.
     """
     event = CameraEvent(
@@ -211,7 +223,13 @@ def record_yolo_events(
     db.flush()
 
     alert: Alert | None = None
-    if raise_alert and _find_open_duplicate_yolo(db, camera_id, event_type) is None:
+    if raise_alert and (
+        _find_open_duplicate_yolo(
+            db, camera_id, event_type,
+            detected_object=detected_object if dedupe_by_object else None,
+        )
+        is None
+    ):
         alert = Alert(
             mine_id=mine_id,
             alert_type="safety",

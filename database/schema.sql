@@ -16,6 +16,10 @@
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS frame_number INTEGER;
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS video_timestamp DOUBLE PRECISION;
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS source_media_ref VARCHAR(500);
+--
+-- EXISTING DEPLOYMENTS (MSG91 SMS OTP phase): users gained a nullable `mobile`
+-- column and two new tables (otp_challenges, role_invitations). Apply with:
+--   database/migrations/2026-09-26_msg91_otp.sql  (idempotent)
 -- ============================================================================
 
 BEGIN;
@@ -30,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     role              VARCHAR(40)  NOT NULL DEFAULT 'safety_officer',
     hashed_password   VARCHAR(255),
     supabase_user_id  VARCHAR(64),
+    mobile            VARCHAR(15),
     is_active         BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -38,6 +43,58 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email);
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_supabase_user_id ON users (supabase_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile);
+
+-- ----------------------------------------------------------------------------
+-- otp_challenges  (MSG91 OTP Widget verification state; provider request ids)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS otp_challenges (
+    id                  VARCHAR(36)  PRIMARY KEY,
+    subject             VARCHAR(36)  NOT NULL,
+    purpose             VARCHAR(20)  NOT NULL,
+    mobile              VARCHAR(15)  NOT NULL,
+    provider            VARCHAR(30)  NOT NULL DEFAULT 'msg91_widget',
+    provider_ref        VARCHAR(255),
+    attempts_left       INTEGER      NOT NULL DEFAULT 5,
+    attempts_used       INTEGER      NOT NULL DEFAULT 0,
+    request_count       INTEGER      NOT NULL DEFAULT 1,
+    first_requested_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    last_sent_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    expires_at          TIMESTAMPTZ  NOT NULL,
+    consumed_at         TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    last_error          VARCHAR(255),
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT ck_otp_purpose CHECK (purpose IN ('register', 'login'))
+);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_subject ON otp_challenges (subject);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_purpose ON otp_challenges (purpose);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_mobile ON otp_challenges (mobile);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_expires_at ON otp_challenges (expires_at);
+CREATE INDEX IF NOT EXISTS ix_otp_subject_purpose ON otp_challenges (subject, purpose);
+
+-- ----------------------------------------------------------------------------
+-- role_invitations  (admin-issued single-use invitations for privileged roles)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS role_invitations (
+    id             VARCHAR(36)  PRIMARY KEY,
+    role           VARCHAR(40)  NOT NULL,
+    code_hash      VARCHAR(255) NOT NULL,
+    invited_by_id  VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
+    note           VARCHAR(255),
+    bound_email    VARCHAR(255),
+    bound_mobile   VARCHAR(15),
+    is_used        BOOLEAN      NOT NULL DEFAULT FALSE,
+    used_by_id     VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
+    used_at        TIMESTAMPTZ,
+    expires_at     TIMESTAMPTZ  NOT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT ck_role_invitations_role CHECK (role IN ('admin', 'environmental_officer'))
+);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_role ON role_invitations (role);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_is_used ON role_invitations (is_used);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_email ON role_invitations (bound_email);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_mobile ON role_invitations (bound_mobile);
 
 -- ----------------------------------------------------------------------------
 -- mines
@@ -296,6 +353,8 @@ COMMIT;
 -- tables locked down at the database level for defence in depth.
 -- ============================================================================
 ALTER TABLE users                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE otp_challenges       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE role_invitations     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mines                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_rules     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE environmental_readings ENABLE ROW LEVEL SECURITY;

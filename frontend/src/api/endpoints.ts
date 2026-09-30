@@ -11,9 +11,14 @@ import type {
   IngestResult,
   Incident,
   Inspection,
+  LoginOtpStartResponse,
   LoginResponse,
   Mine,
+  OtpSendResponse,
   Paginated,
+  RegisterCompleteRequest,
+  RegisterCompleteResponse,
+  RegisterVerifyResponse,
   RestrictedZone,
   RiskAssessment,
   User,
@@ -33,6 +38,18 @@ export const authApi = {
     return api.postForm<LoginResponse>('/api/auth/login', form)
   },
   me: () => api.get<User>('/api/auth/me'),
+
+  // --- MSG91 SMS OTP flows (same JWT auth; secrets stay server-side) ---
+  loginOtpStart: (email: string, password: string) =>
+    api.post<LoginOtpStartResponse>('/api/auth/login/otp/start', { email, password }),
+  loginOtpVerify: (email: string, otp: string) =>
+    api.post<LoginResponse>('/api/auth/login/otp/verify', { email, otp }),
+  registerOtpStart: (mobile: string) =>
+    api.post<OtpSendResponse>('/api/auth/register/otp/start', { mobile }),
+  registerOtpVerify: (mobile: string, otp: string) =>
+    api.post<RegisterVerifyResponse>('/api/auth/register/otp/verify', { mobile, otp }),
+  registerComplete: (body: RegisterCompleteRequest) =>
+    api.post<RegisterCompleteResponse>('/api/auth/register/complete', body),
 }
 
 export const minesApi = {

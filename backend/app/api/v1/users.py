@@ -12,6 +12,7 @@ from app.database.session import get_db
 from app.schemas import UserCreate, UserResponse, UserUpdate
 from app.schemas.common import PaginatedResponse
 from app.services import CrudService
+from app.services.msg91 import normalize_mobile
 
 router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(get_current_user)])
 service = CrudService(User, default_order="created_at")
@@ -52,6 +53,9 @@ def create_user(db: DbSession, payload: UserCreate):
     try:
         data = payload.model_dump()
         password = data.pop("password")
+        mobile = data.pop("mobile", None)
+        if mobile:
+            data["mobile"] = normalize_mobile(mobile)  # raises ValueError -> 422 below
         user = User(**data, hashed_password=hash_password(password))
         db.add(user)
         db.commit()
@@ -61,8 +65,10 @@ def create_user(db: DbSession, payload: UserCreate):
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already exists.",
+            detail="Email or mobile already exists.",
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -77,6 +83,9 @@ def update_user(db: DbSession, user_id: str, payload: UserUpdate):
     data = payload.model_dump(exclude_unset=True)
     if "password" in data:
         user.hashed_password = hash_password(data.pop("password"))
+    if "mobile" in data:
+        mobile = data.pop("mobile")
+        user.mobile = normalize_mobile(mobile) if mobile else None
     for field, value in data.items():
         setattr(user, field, value)
     try:
@@ -84,7 +93,10 @@ def update_user(db: DbSession, user_id: str, payload: UserUpdate):
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed (duplicate email?).")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed (duplicate email or mobile?).")
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return _to_response(user)
 
 

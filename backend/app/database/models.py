@@ -48,6 +48,9 @@ class User(Base):
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # When Supabase Auth is used, this links the row to auth.users.id.
     supabase_user_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    # Verified mobile number (E.164 without '+', e.g. 919999999999).
+    # Required for MSG91 SMS OTP login; nullable so pre-existing rows stay valid.
+    mobile: Mapped[str | None] = mapped_column(String(15), unique=True, nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
@@ -56,6 +59,81 @@ class User(Base):
         CheckConstraint(
             "role IN ('admin','mine_manager','safety_officer','environmental_officer')",
             name="ck_users_role",
+        ),
+    )
+
+
+class OtpChallenge(Base):
+    """Server-side OTP challenge for the MSG91 OTP Widget.
+
+    MSG91's widget generates and validates the code with its default SMS
+    configuration; we store only the opaque provider request id that the
+    send call returns (never a code). `purpose` separates registration and
+    login flows. Rows are consumed on success; expired rows are ignored and
+    cleaned up opportunistically.
+    """
+
+    __tablename__ = "otp_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Registration challenges keyed by mobile; login challenges by user id.
+    subject: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # register|login
+    mobile: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
+    # Which OTP backend produced this challenge (future-proofing).
+    provider: Mapped[str] = mapped_column(String(30), nullable=False, default="msg91_widget")
+    # Opaque request id returned by MSG91's widget send call. Verified later
+    # via /api/v5/widget/verifyOtp. No code is ever stored locally.
+    provider_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attempts_left: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    attempts_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Rate-limiting window for sends ( resend cooldown + hourly cap ).
+    first_requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    last_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when the registration token minted from this challenge was used to
+    # create the account (single-use guarantee for the registration flow).
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when MSG91 rejects the send or the cooldown/cap is hit (for support).
+    last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("purpose IN ('register','login')", name="ck_otp_purpose"),
+        Index("ix_otp_subject_purpose", "subject", "purpose"),
+    )
+
+
+class RoleInvitation(Base):
+    """Admin-issued invitation for privileged roles (approval mechanism).
+
+    Minted by an existing administrator for 'admin' or 'environmental_officer'
+    (Government Officer) signups. Single-use, expiring, and consumed at
+    registration. Codes are stored bcrypt-hashed.
+    """
+
+    __tablename__ = "role_invitations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)  # admin|environmental_officer
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    invited_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Optional: bind the invitation to one email or mobile.
+    bound_email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    bound_mobile: Mapped[str | None] = mapped_column(String(15), nullable=True, index=True)
+    is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    used_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('admin','environmental_officer')",
+            name="ck_role_invitations_role",
         ),
     )
 

@@ -18,6 +18,11 @@ MODEL_PATH = Path(settings.YOLO_MODEL_PATH)
 MODEL_EXISTS = MODEL_PATH.exists() or Path("../ai/yolo/models/yolo11n.pt").exists()
 FIXTURE_IMAGE = Path(__file__).parent / "fixtures" / "bus.jpg"
 FIXTURE_VIDEO = Path(__file__).parent / "fixtures" / "test_video.mp4"
+# Real CC-licensed construction-site photos the fine-tuned SafetyVision PPE
+# model genuinely detects (verified: Hardhat/NO-Safety Vest/Safety Vest).
+PPE_NO_VEST = Path(__file__).parent / "fixtures" / "ppe_no_vest.jpg"
+PPE_COMPLIANT = Path(__file__).parent / "fixtures" / "ppe_hardhats_vests.jpg"
+PPE_VIDEO = Path(__file__).parent / "fixtures" / "ppe_video.mp4"
 
 needs_model = pytest.mark.skipif(not MODEL_EXISTS, reason="YOLO weights not present in test environment")
 # Endpoint-flow tests need YOLO as the ACTIVE detector (endpoints return 503
@@ -109,65 +114,92 @@ def test_detector_info_reports_real_yolo(client):
     body = r.json()
     assert body["simulated"]["available"] is True          # fallback intact
     assert body["yolo"]["available"] is True               # real model loaded
-    assert body["yolo"]["classes"] == 80
+    # Whatever weights are configured (COCO or PPE), the class count is the
+    # model's own — never a hard-coded expectation.
+    assert body["yolo"]["classes"] > 0
 
 
 @needs_yolo_mode
 def test_real_image_inference_creates_events(client):
+    """Real PPE-model inference: every reported class must be a genuine model
+    class, and a NO-Safety Vest detection must become a violation event."""
     mine_id = _make_mine(client, "MINE-YOLO1")
     r = client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "confidence": 0.4},
-                    files={"upload": ("bus.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
+                    files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r.status_code == 200, r.text
     body = r.json()
 
     # Honest labelling
     assert body["detector"] == "yolo"
     assert body["source"] == "uploaded_image"
-    # Real detections from the bus fixture: bus + >=1 person expected
-    assert body["detection_count"] >= 2
-    assert "person" in body["classes_detected"]
-    assert "bus" in body["classes_detected"]
+    # The model genuinely detects PPE classes in this fixture (verified offline).
+    assert body["detection_count"] >= 1
+    lowered = {c.lower() for c in body["classes_detected"]}
+    assert "hardhat" in lowered          # real compliance detection
+    assert "no-safety vest" in lowered   # real violation-class detection
+    from ultralytics import YOLO
+    model_classes = {n.lower() for n in YOLO(str(MODEL_PATH)).names.values()}
+    assert lowered <= model_classes, "reported classes must be model classes"
     for d in body["detections"]:
         assert 0 <= d["confidence"] <= 1 and len(d["bbox"]) == 4
+
+    # PPE violation evaluation from the model's own NO-Safety Vest detection
+    rules = {f["rule"] for f in body["safety_findings"]}
+    assert "no_safety_vest" in rules
 
     # Storage refs + camera events created
     assert body["annotated_image_url"] and body["original_image_url"]
     assert len(body["camera_event_ids"]) >= 1
+    event_types = {e["event_type"] for e in body["events"]}
+    assert "person_without_safety_vest" in event_types
 
     # Events persisted with detection_source='yolo'
-    events = []
     for eid in body["camera_event_ids"]:
         r2 = client.get(f"/api/camera-events/{eid}")
         assert r2.status_code == 200
         assert r2.json()["detection_source"] == "yolo"
-        events.append(r2.json())
+
+
+@needs_yolo_mode
+def test_worn_ppe_creates_compliance_event_without_alert(client):
+    """Worn PPE (Hardhat/Safety Vest) is recorded as compliance — never alerted."""
+    mine_id = _make_mine(client, "MINE-PPEC")
+    r = client.post("/api/ai/detect/image",
+                    params={"mine_id": mine_id, "confidence": 0.4},
+                    files={"upload": ("ppe_hardhats_vests.jpg", PPE_COMPLIANT.read_bytes(), "image/jpeg")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    event_types = {e["event_type"] for e in body["events"]}
+    assert "helmet_detected" in event_types and "safety_vest_detected" in event_types
+    assert body["alerts"] == []            # compliance never raises alerts
+    rules = {f["rule"] for f in body["safety_findings"]}
+    assert all(not f["rule"].startswith("no_") for f in body["safety_findings"])
 
 
 @needs_yolo_mode
 def test_zone_bound_image_raises_yolo_alert(client):
-    """Person in a restricted zone -> alert with source='yolo' (never simulated)."""
+    """A real NO-Safety Vest violation in a zone-bound upload -> alert with
+    source='yolo' (never simulated). Zone rules fire only if the model also
+    detects Person/vehicle classes in the frame."""
     mine_id = _make_mine(client, "MINE-YOLO2")
-    zones = client.get("/api/restricted-zones", params={"mine_id": mine_id}).json()
-    # create a zone for this mine
     zone = client.post("/api/restricted-zones", json={
         "mine_id": mine_id, "name": "Blast Zone YOLO", "camera_id": "CAM-YOLO",
     }).json()
 
     r = client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
-                    files={"upload": ("bus.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
+                    files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r.status_code == 200
     body = r.json()
     rules = {f["rule"] for f in body["safety_findings"]}
-    assert "restricted_zone_person" in rules
-    assert "restricted_zone_vehicle" in rules
+    assert "no_safety_vest" in rules          # from the model's own violation class
     assert body["alerts"], "expected at least one yolo alert"
     for a in body["alerts"]:
         assert a["source"] == "yolo"
         alert = client.get(f"/api/alerts/{a['id']}").json()
         assert alert["source"] == "yolo"
-        assert "YOLO" in alert["description"]
+        assert "Real YOLO" in alert["description"]
 
 
 @needs_yolo_mode
@@ -180,12 +212,11 @@ def test_duplicate_alert_suppression_for_yolo(client):
 
     r1 = client.post("/api/ai/detect/image",
                      params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
-                     files={"upload": ("bus.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
+                     files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     r2 = client.post("/api/ai/detect/image",
                      params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
-                     files={"upload": ("bus.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
+                     files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r1.status_code == 200 and r2.status_code == 200
-    first_count = len(r1.json()["alerts"])
     second_count = len(r2.json()["alerts"])
     # Events are created both times; duplicate ALERTS are suppressed.
     assert len(r2.json()["camera_event_ids"]) >= 1
@@ -202,7 +233,7 @@ def test_video_inference_end_to_end(client):
     r = client.post("/api/ai/detect/video",
                     params={"mine_id": mine_id, "zone_id": zone["id"],
                             "confidence": 0.4, "frame_stride": 5},
-                    files={"upload": ("test_video.mp4", FIXTURE_VIDEO.read_bytes(), "video/mp4")})
+                    files={"upload": ("ppe_video.mp4", PPE_VIDEO.read_bytes(), "video/mp4")})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["detector"] == "yolo"
@@ -211,7 +242,9 @@ def test_video_inference_end_to_end(client):
     assert meta["processed_frames"] == 5  # 25 frames / stride 5
     assert meta["processing_seconds"] > 0
     assert body["detection_count"] > 0
-    assert set(body["class_summary"]) >= {"person"}
+    # Real PPE classes from the sampled frames (case-insensitive: 'Hardhat').
+    lowered = {c.lower() for c in body["class_summary"]}
+    assert "hardhat" in lowered
     assert body["annotated_video_url"] and body["original_video_url"]
     # frame metadata present on events
     for e in body["events"]:
@@ -281,3 +314,72 @@ def test_missing_model_clear_error(monkeypatch):
         svc.detect_image_bytes(b"\x89PNG\r\n\x1a\n")
     info = svc.model_info()
     assert info["available"] is False and "not found" in info["error"]
+
+
+# ------------------------------------------------------------------ #
+# PPE rules: only genuine violation-class detections produce findings
+# ------------------------------------------------------------------ #
+from app.services.safety_rules import (  # noqa: E402
+    PPE_VIOLATION_CLASSES,
+    evaluate_safety_rules,
+)
+from app.services.yolo_detection import DetectionBox  # noqa: E402
+
+
+def _box(cls: str, conf: float = 0.9) -> DetectionBox:
+    return DetectionBox(class_name=cls, class_id=0, confidence=conf, bbox=[0, 0, 10, 10])
+
+
+def test_ppe_violation_classes_are_mapped():
+    """Every violation class the SafetyVision model trains must map to an event."""
+    for cls in PPE_VIOLATION_CLASSES:
+        assert cls in {"no-hardhat", "no-safety vest", "no-gloves", "no-goggles",
+                       "no-mask", "no_harness", "fall-detected"}
+
+
+def test_no_hardhat_detection_becomes_violation_finding():
+    findings = evaluate_safety_rules([_box("NO-Hardhat", 0.89)],
+                                     zone_name=None, is_restricted_zone=False)
+    assert [f.event_type for f in findings] == ["person_without_helmet"]
+    f = findings[0]
+    assert f.alert is True and f.confidence == 0.89
+    assert f.detected_class == "NO-Hardhat"          # raw model class, unrenamed
+    assert f.severity == "high"
+
+
+def test_worn_ppe_is_compliance_not_violation():
+    findings = evaluate_safety_rules([_box("Hardhat", 0.94), _box("Safety Vest", 0.9)],
+                                     zone_name=None, is_restricted_zone=False)
+    assert all(f.alert is False for f in findings)     # never alerts on compliance
+    assert {f.event_type for f in findings} == {"helmet_detected", "safety_vest_detected"}
+
+
+def test_person_alone_never_fabricates_ppe_violations():
+    """A person with NO PPE-class detections must not yield any PPE finding."""
+    findings = evaluate_safety_rules([_box("Person", 0.94)],
+                                     zone_name=None, is_restricted_zone=False)
+    assert findings == []
+
+
+def test_person_capitalization_counts_for_zone_and_crowd_rules():
+    """The PPE model emits 'Person' (capital); rules must still match."""
+    many = [_box("Person", 0.8) for _ in range(4)]
+    findings = evaluate_safety_rules(many, zone_name="Z", is_restricted_zone=True)
+    rules = {f.rule for f in findings}
+    assert "restricted_zone_person" in rules and "crowd_threshold" in rules
+
+
+def test_fall_detection_is_critical():
+    findings = evaluate_safety_rules([_box("Fall-Detected", 0.91)],
+                                     zone_name=None, is_restricted_zone=False)
+    assert findings[0].event_type == "fall_detected" and findings[0].severity == "critical"
+
+
+def test_mixed_ppe_scene_yields_both_kinds():
+    findings = evaluate_safety_rules(
+        [_box("Person", 0.94), _box("NO-Hardhat", 0.89), _box("Hardhat", 0.94)],
+        zone_name=None, is_restricted_zone=False,
+    )
+    kinds = {(f.event_type, f.alert) for f in findings}
+    assert ("person_without_helmet", True) in kinds
+    assert ("helmet_detected", False) in kinds

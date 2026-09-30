@@ -15,6 +15,8 @@ export interface User {
   email: string
   full_name: string
   role: Role
+  /** Verified mobile (digits incl. country code); present after OTP registration. */
+  mobile?: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -25,6 +27,49 @@ export interface LoginResponse {
   token_type: string
   user: User
 }
+
+// ---- MSG91 SMS OTP auth flows (same JWT auth system) ----
+
+export interface OtpSendResponse {
+  mobile_masked: string
+  cooldown_seconds: number
+  expires_in_minutes: number
+}
+
+export interface LoginOtpStartResponse {
+  /** false -> account has no registered mobile; use classic login instead. */
+  otp_required: boolean
+  mobile_masked: string | null
+  cooldown_seconds: number | null
+  expires_in_minutes: number | null
+}
+
+export interface RegisterVerifyResponse {
+  token: string
+  mobile_masked: string
+  expires_in_minutes: number
+}
+
+/**
+ * Roles selectable on the public registration form. Privileged roles
+ * (Government Officer, Administrator) are invitation-only: a valid
+ * single-use invitation code grants exactly the role it was minted for,
+ * so no privileged role is ever offered in the dropdown.
+ */
+export type RegistrableRole = 'mine_manager' | 'safety_officer'
+
+export interface RegisterCompleteRequest {
+  token: string
+  email: string
+  full_name: string
+  password: string
+  /** Public role choice; overridden by the invitation's role when a code is supplied. */
+  role: RegistrableRole
+  invitation_code?: string | null
+}
+
+/** Successful registration always returns the same JWT shape as login. */
+export type RegisterCompleteResponse = LoginResponse
 
 export interface Mine {
   id: string

@@ -2,12 +2,17 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from 'react'
 import { authApi } from '../api/endpoints'
 import { getStoredToken, setStoredToken } from '../api/client'
-import type { User } from '../api/types'
+import type { LoginResponse, RegisterCompleteRequest, RegisterCompleteResponse, User } from '../api/types'
 
 interface AuthContextValue {
   user: User | null
   loading: boolean
   login: (email: string, password: string) => Promise<void>
+  /** OTP step 2 of login: verify the SMS code -> stores the same JWT. */
+  loginVerifyOtp: (email: string, otp: string) => Promise<void>
+  /** Full OTP registration; every successful registration issues a JWT
+   *  (privileged roles require a valid invitation code up front). */
+  register: (payload: RegisterCompleteRequest) => Promise<RegisterCompleteResponse>
   logout: () => void
 }
 
@@ -31,9 +36,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await authApi.login(email, password)
+    // If the account has a registered mobile, the backend requires the SMS
+    // OTP step; otherwise this resolves exactly like the classic login.
+    try {
+      const start = await authApi.loginOtpStart(email, password)
+      if (start.otp_required) {
+        throw new OtpRequiredError(start.mobile_masked ?? '')
+      }
+      const res = await authApi.login(email, password)
+      setStoredToken(res.access_token)
+      setUser(res.user)
+    } catch (err) {
+      if (err instanceof OtpRequiredError) throw err
+      // OTP flow unavailable (older backend?) -> fall back to classic login.
+      const res = await authApi.login(email, password)
+      setStoredToken(res.access_token)
+      setUser(res.user)
+    }
+  }, [])
+
+  const loginVerifyOtp = useCallback(async (email: string, otp: string) => {
+    const res: LoginResponse = await authApi.loginOtpVerify(email, otp)
     setStoredToken(res.access_token)
     setUser(res.user)
+  }, [])
+
+  const register = useCallback(async (payload: RegisterCompleteRequest) => {
+    const res = await authApi.registerComplete(payload)
+    setStoredToken(res.access_token)
+    setUser(res.user)
+    return res
   }, [])
 
   const logout = useCallback(() => {
@@ -48,8 +80,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('mineguardai:unauthorized', onUnauthorized)
   }, [])
 
-  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout])
+  const value = useMemo(
+    () => ({ user, loading, login, loginVerifyOtp, register, logout }),
+    [user, loading, login, loginVerifyOtp, register, logout],
+  )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+/** Thrown by `login` when the backend demands the SMS OTP step. */
+export class OtpRequiredError extends Error {
+  mobileMasked: string
+  constructor(mobileMasked: string) {
+    super('OTP required')
+    this.name = 'OtpRequiredError'
+    this.mobileMasked = mobileMasked
+  }
 }
 
 export function useAuth(): AuthContextValue {

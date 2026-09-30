@@ -17,6 +17,9 @@ class UserBase(BaseModel):
     full_name: str = Field(min_length=1, max_length=255)
     role: UserRole = "safety_officer"
     is_active: bool = True
+    # E.164-without-'+' verified mobile (MSG91 OTP login). Never accepted from
+    # ordinary updates; changes require OTP re-verification (future work).
+    mobile: str | None = Field(default=None, max_length=15)
 
 
 class UserCreate(UserBase):
@@ -30,6 +33,7 @@ class UserUpdate(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=72)
+    mobile: str | None = Field(default=None, max_length=15)
 
 
 class UserResponse(UserBase):

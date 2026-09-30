@@ -21,6 +21,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { to: '/environment', label: 'Environmental' },
       { to: '/camera-events', label: 'Camera Events' },
+      { to: '/live-detection', label: 'Live Detection' },
       { to: '/zones', label: 'Restricted Zones' },
     ],
   },

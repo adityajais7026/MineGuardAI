@@ -3,9 +3,14 @@ import { ApiError, getStoredToken } from '../api/client'
 import { minesApi } from '../api/endpoints'
 import type { Mine } from '../api/types'
 import { useApiResource } from '../hooks/useApiResource'
+import { useAuth } from '../context/AuthContext'
 import {
   Badge, EmptyState, ErrorState, Loading, Modal, PageHeader, SeverityBadge, SimulatedDataNote, StatusBadge,
 } from '../components/ui'
+import {
+  buildPpeSummary, friendlyEvidence, ppeLabel, ppeStatus, ruleLabel,
+  type SafetyFinding,
+} from '../utils/ppe'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -23,13 +28,20 @@ interface DetectResult {
   detection_count: number
   classes_detected: string[]
   class_summary?: Record<string, number>
-  safety_findings: { rule: string; event_type: string; severity: string; evidence: string }[]
+  safety_findings: SafetyFinding[]
+  person_ppe_report?: {
+    person_index: number
+    person_confidence: number
+    person_bbox: number[]
+    ppe: { class: string; confidence: number; bbox: number[]; decision: string }[]
+    ppe_status: 'VIOLATION' | 'PROTECTED' | 'UNDETERMINED'
+  }[] | null
   annotated_image_url?: string | null
   original_image_url?: string | null
   annotated_video_url?: string | null
   original_video_url?: string | null
   camera_event_ids: string[]
-  events: { camera_event_id: string; event_type: string; class?: string; frame_number?: number; timestamp_seconds?: number; rule?: string }[]
+  events: { camera_event_id: string; event_type: string; class?: string; frame_number?: number; timestamp_seconds?: number; rule?: string; ppe_status?: string | null }[]
   alerts: { id: string; title: string; severity: string; source: string }[]
   storage_provider: string
   video_metadata?: {
@@ -42,6 +54,11 @@ interface DetectResult {
 type Phase = 'idle' | 'uploading' | 'processing' | 'success' | 'error'
 
 export default function CameraEventsPage() {
+  const { user } = useAuth()
+  // Mirrors the backend RBAC (WRITE_ROLES["ai_simulation"] = {"safety_officer"},
+  // with admin always allowed by RoleChecker). The backend 403 remains the real
+  // gate; this only hides the button from roles it would reject.
+  const canRunDetection = user?.role === 'admin' || user?.role === 'safety_officer'
   const mines = useApiResource(() => minesApi.list({ limit: 200 }).then((r) => r.items), [])
   const [page, setPage] = useState(0)
   const [statusFilter, setStatusFilter] = useState('')
@@ -151,13 +168,19 @@ export default function CameraEventsPage() {
       <PageHeader
         title="Camera Events & YOLO Detection"
         subtitle="Real YOLO object detection on uploaded media + clearly-labelled simulated events"
-        actions={<button className="btn btn-primary" onClick={() => setDetectOpen(true)}>+ Run YOLO Detection</button>}
+        actions={canRunDetection ? (
+          <button className="btn btn-primary" onClick={() => setDetectOpen(true)}>+ Run YOLO Detection</button>
+        ) : undefined}
       />
 
       <div className="filter-bar">
         <select value={eventType} onChange={(e) => { setEventType(e.target.value); setPage(0) }} aria-label="Event type">
           <option value="">All event types</option>
-          <option value="person_without_helmet">person without helmet (sim)</option>
+          <option value="person_without_helmet">person without helmet</option>
+          <option value="person_without_safety_vest">person without safety vest (YOLO PPE)</option>
+          <option value="fall_detected">fall detected (YOLO PPE)</option>
+          <option value="helmet_detected">helmet detected (YOLO PPE)</option>
+          <option value="safety_vest_detected">safety vest detected (YOLO PPE)</option>
           <option value="restricted_zone_entry">restricted zone entry</option>
           <option value="vehicle_in_restricted_area">vehicle in restricted area</option>
           <option value="unsafe_crowding">unsafe crowding</option>
@@ -178,7 +201,7 @@ export default function CameraEventsPage() {
               <thead>
                 <tr>
                   <th>When</th><th>Event</th><th>Object</th><th>Source</th><th>Confidence</th>
-                  <th>Frame</th><th>Severity</th><th>Status</th>
+                  <th>Frame</th><th>Severity</th><th>Status</th><th>PPE</th>
                 </tr>
               </thead>
               <tbody>
@@ -186,7 +209,7 @@ export default function CameraEventsPage() {
                   <tr key={e.id}>
                     <td><small>{new Date(e.occurred_at).toLocaleString()}</small></td>
                     <td>{e.event_type.replace(/_/g, ' ')}</td>
-                    <td>{e.detected_object ?? '—'}</td>
+                    <td>{e.detected_object ? ppeLabel(e.detected_object) : '—'}</td>
                     <td>
                       <Badge text={e.detection_source} tone={e.detection_source === 'yolo' ? 'info' : 'muted'} />
                     </td>
@@ -194,6 +217,12 @@ export default function CameraEventsPage() {
                     <td>{e.frame_number != null ? `#${e.frame_number}` : '—'}</td>
                     <td><SeverityBadge value={e.severity} /></td>
                     <td><StatusBadge value={e.status} /></td>
+                    <td>
+                      {ppeStatus(e.event_type, e.severity) === 'VIOLATION' && <Badge text="VIOLATION" tone="danger" />}
+                      {ppeStatus(e.event_type, e.severity) === 'UNDETERMINED' && <Badge text="UNDETERMINED" tone="warn" />}
+                      {ppeStatus(e.event_type, e.severity) === 'DETECTED' && <Badge text="DETECTED" tone="ok" />}
+                      {ppeStatus(e.event_type, e.severity) === null && <span className="muted">—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -267,7 +296,44 @@ export default function CameraEventsPage() {
 
           {phase === 'success' && result && (
             <div className="detection-results">
-              <h3>Detection Summary</h3>
+              {/* ---- Short PPE verdict: readable in 2-3 seconds ---- */}
+              {(() => {
+                const s = buildPpeSummary(result.safety_findings, result.alerts.length)
+                const counts: Record<string, number> = {}
+                for (const f of result.safety_findings) {
+                  if (['restricted_zone_person', 'restricted_zone_vehicle', 'crowd_threshold'].includes(f.rule)) continue
+                  const l = ruleLabel(f.rule)
+                  counts[l] = (counts[l] ?? 0) + 1
+                }
+                const detectedLine = Object.entries(counts)
+                  .map(([label, n]) => `${label} — ${n}`)
+                  .join(' · ')
+                const worst = result.safety_findings.find((f) => f.status === 'violation')
+                  ?? result.safety_findings.find((f) => f.status === 'undetermined')
+                  ?? result.safety_findings[0]
+                const worstBadge = !worst ? null
+                  : worst.status === 'violation' ? <Badge text="VIOLATION" tone="danger" />
+                  : worst.status === 'undetermined' ? <Badge text="UNDETERMINED" tone="warn" />
+                  : <Badge text="DETECTED" tone="ok" />
+                return (
+                  <div className="ppe-summary">
+                    <h3>{s.title}</h3>
+                    {s.lines.map((l) => <p key={l}>{l}</p>)}
+                    {detectedLine && <p>Detected: {detectedLine}</p>}
+                    {worst && (
+                      <p>
+                        Confidence: {worst.confidence != null ? `${Math.round(worst.confidence * 100)}%` : '—'}{' '}
+                        · Status: {worstBadge}
+                        {result.alerts.length > 0 && (
+                          <> · Alert: <SeverityBadge value={result.alerts[0].severity} /></>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
+              <h4>Technical Details</h4>
               <p>
                 <Badge text={result.detector.toUpperCase()} tone="info" />{' '}
                 <Badge text={result.model} tone="muted" />{' '}
@@ -276,15 +342,15 @@ export default function CameraEventsPage() {
 
               {result.class_summary ? (
                 <table className="table">
-                  <thead><tr><th>Class</th><th>Detections</th></tr></thead>
+                  <thead><tr>                    <th>Class</th><th>Detections</th></tr></thead>
                   <tbody>
                     {Object.entries(result.class_summary).map(([cls, n]) => (
-                      <tr key={cls}><td>{cls}</td><td>{n}</td></tr>
+                      <tr key={cls}><td>{ppeLabel(cls)}</td><td>{n}</td></tr>
                     ))}
                   </tbody>
                 </table>
               ) : (
-                <p>{result.detection_count} object(s): {result.classes_detected.join(', ')}</p>
+                <p>{result.detection_count} object(s): {result.classes_detected.map((c) => ppeLabel(c)).join(', ')}</p>
               )}
 
               {result.video_metadata && (
@@ -299,17 +365,52 @@ export default function CameraEventsPage() {
                 <>
                   <h4>Safety rule evaluation</h4>
                   <table className="table">
-                    <thead><tr><th>Rule</th><th>Severity</th><th>Evidence</th></tr></thead>
+                    <thead><tr><th>Rule</th><th>Detection conf.</th><th>Safety status</th><th>Alert severity</th><th>Evidence</th></tr></thead>
                     <tbody>
                       {result.safety_findings.map((f) => (
-                        <tr key={f.rule}>
-                          <td>{f.rule.replace(/_/g, ' ')}</td>
-                          <td><SeverityBadge value={f.severity} /></td>
-                          <td><small>{f.evidence}</small></td>
+                        <tr key={f.rule + String(f.confidence)}>
+                          <td>{ruleLabel(f.rule)}</td>
+                          <td>{f.confidence != null ? `${Math.round(f.confidence * 100)}%` : '—'}</td>
+                          <td>
+                            {f.status === 'violation' && <Badge text="VIOLATION" tone="danger" />}
+                            {f.status === 'undetermined' && <Badge text="UNDETERMINED" tone="warn" />}
+                            {f.status === 'compliance' && <Badge text="DETECTED" tone="ok" />}
+                            {!f.status && <span className="muted">—</span>}
+                          </td>
+                          <td>{f.status === 'violation' ? <SeverityBadge value={f.severity} /> : <span className="muted">none</span>}</td>
+                          <td><small>{friendlyEvidence(f.evidence)}</small></td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </>
+              )}
+
+              {result.person_ppe_report && result.person_ppe_report.length > 0 && (
+                <>
+                  <h4>People &amp; PPE status</h4>
+                  <table className="table">
+                    <thead><tr><th>Person</th><th>Confidence</th><th>PPE observed</th><th>PPE status</th></tr></thead>
+                    <tbody>
+                      {result.person_ppe_report.map((p) => (
+                        <tr key={p.person_index}>
+                          <td>#{p.person_index + 1}</td>
+                          <td>{Math.round(p.person_confidence * 100)}%</td>
+                          <td>
+                            {p.ppe.length === 0
+                              ? <span className="muted">none confidently — PPE could not be classified</span>
+                              : p.ppe.map((e) => `${ppeLabel(e.class)} (${Math.round(e.confidence * 100)}%)`).join(', ')}
+                          </td>
+                          <td>
+                            {p.ppe_status === 'VIOLATION' && <Badge text="VIOLATION" tone="danger" />}
+                            {p.ppe_status === 'PROTECTED' && <Badge text="PROTECTED" tone="ok" />}
+                            {p.ppe_status === 'UNDETERMINED' && <Badge text="UNDETERMINED" tone="warn" />}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="muted">UNDETERMINED means the model gave no confident PPE evidence for that person — it is never treated as a violation.</p>
                 </>
               )}
 
@@ -358,7 +459,7 @@ export default function CameraEventsPage() {
                 <tbody>
                   {result.detections.slice(0, 15).map((d, i) => (
                     <tr key={i}>
-                      <td>{d.class}</td>
+                      <td>{ppeLabel(d.class)}</td>
                       <td>{(d.confidence * 100).toFixed(1)}%</td>
                       <td><small>({d.bbox.map((v) => Math.round(v)).join(', ')})</small></td>
                       {mediaKind === 'video' && <td>#{d.frame_number ?? '—'}</td>}
