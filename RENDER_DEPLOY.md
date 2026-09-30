@@ -107,6 +107,7 @@ first deploy, in Render:
 |---|---|---|
 | 13 | Health public | `curl https://mineguardai-api.onrender.com/health` |
 | 14 | DB connectivity | `curl .../api/health/db` → `{"connected":true,"database":"postgresql"}` |
+| OTP | Registration SMS | `POST .../api/auth/register/otp/start` with `{"mobile":"<real number>"}`; on 502 the detail now names the exact cause (authkey/widget not configured = env missing in container; `status=401`/`Widget Not Found` = pasted value garbled — re-copy raw, no quotes/spaces) |
 | 15 | Vyra live | `curl .../api/ai/status` → `detector: yolo`, model `vyra_yolov8m_ppe.pt`; then login → POST an image to `/api/ai/detect/image` → detections labelled `yolo` |
 | 7/8 | Frontend wiring | Open the web URL from a phone on mobile data, login, run live webcam detection |
 
