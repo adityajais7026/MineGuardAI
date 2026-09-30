@@ -20,6 +20,10 @@
 -- EXISTING DEPLOYMENTS (MSG91 SMS OTP phase): users gained a nullable `mobile`
 -- column and two new tables (otp_challenges, role_invitations). Apply with:
 --   database/migrations/2026-09-26_msg91_otp.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (user-invitations phase): role_invitations gained two
+-- nullable columns (token_hash, full_name) and a widened role CHECK. Apply with:
+--   database/migrations/2026-10-01_user_invitations.sql  (idempotent)
 -- ============================================================================
 
 BEGIN;
@@ -80,6 +84,8 @@ CREATE TABLE IF NOT EXISTS role_invitations (
     id             VARCHAR(36)  PRIMARY KEY,
     role           VARCHAR(40)  NOT NULL,
     code_hash      VARCHAR(255) NOT NULL,
+    token_hash     VARCHAR(255),
+    full_name      VARCHAR(255),
     invited_by_id  VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
     note           VARCHAR(255),
     bound_email    VARCHAR(255),
@@ -89,7 +95,7 @@ CREATE TABLE IF NOT EXISTS role_invitations (
     used_at        TIMESTAMPTZ,
     expires_at     TIMESTAMPTZ  NOT NULL,
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT ck_role_invitations_role CHECK (role IN ('admin', 'environmental_officer'))
+    CONSTRAINT ck_role_invitations_role CHECK (role IN ('admin', 'mine_manager', 'safety_officer', 'environmental_officer'))
 );
 CREATE INDEX IF NOT EXISTS ix_role_invitations_role ON role_invitations (role);
 CREATE INDEX IF NOT EXISTS ix_role_invitations_is_used ON role_invitations (is_used);

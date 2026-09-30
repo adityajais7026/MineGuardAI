@@ -6,11 +6,15 @@ import type {
   ComplianceRule,
   CorrectiveAction,
   DashboardSummary,
+  DeleteUserReport,
   EnvironmentalReading,
   EvaluationResult,
   IngestResult,
   Incident,
   Inspection,
+  InvitationLink,
+  InvitationPublic,
+  InvitationSummary,
   LoginOtpStartResponse,
   LoginResponse,
   Mine,
@@ -22,6 +26,7 @@ import type {
   RestrictedZone,
   RiskAssessment,
   User,
+  UserDeleteImpact,
 } from './types'
 
 export interface ListParams {
@@ -139,8 +144,29 @@ export const actionsApi = {
 
 export const usersApi = {
   list: (params?: ListParams) => api.get<Paginated<User>>('/api/users', params),
-  create: (body: Partial<User> & { password?: string }) => api.post<User>('/api/users', body),
   update: (id: string, body: Partial<User> & { password?: string }) =>
     api.patch<User>(`/api/users/${id}`, body),
+  /** Soft delete retained: deactivate instead of destroying audit history. */
   delete: (id: string) => api.delete<void>(`/api/users/${id}`),
+
+  // --- "Invite User" link invitations (admin) ---
+  invite: (body: { full_name: string; email: string; role: string }) =>
+    api.post<InvitationLink>('/api/users/invite', body),
+  invitations: (params?: ListParams) =>
+    api.get<Paginated<InvitationSummary>>('/api/users/invitations', params),
+
+  // --- Permanent deletion (admin, with explicit confirmation in the UI) ---
+  deleteImpact: (id: string) => api.get<UserDeleteImpact>(`/api/users/${id}/impact`),
+  deletePermanent: (id: string) => api.delete<DeleteUserReport>(`/api/users/${id}/permanent`),
+}
+
+export const invitationsApi = {
+  /** Public: validate an accept-link token (no auth). */
+  get: (token: string) => api.get<InvitationPublic>(`/api/invitations/accept/${encodeURIComponent(token)}`),
+  /** Public: consume the invitation; sets the invited person's own password. */
+  accept: (token: string, password: string, confirmPassword: string) =>
+    api.post<LoginResponse>(`/api/invitations/accept/${encodeURIComponent(token)}`, {
+      password,
+      confirm_password: confirmPassword,
+    }),
 }

@@ -12,15 +12,18 @@ from app.api.v1 import (
     environmental_readings,
     incidents,
     inspections,
+    invitations,
     live_detect,
     mines,
     restricted_zones,
     risk,
+    user_management,
     users,
 )
 
 all_routers = [
     auth.router,
+    user_management.router,  # static /users routes must precede users' /{user_id}
     users.router,
     mines.router,
     compliance_rules.router,
@@ -37,6 +40,7 @@ all_routers = [
     incidents.router,
     inspections.router,
     corrective_actions.router,
+    invitations.router,
 ]
 
 __all__ = ["all_routers"]

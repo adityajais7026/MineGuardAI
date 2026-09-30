@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # bcrypt-hashed at rest and never logged.
     OTP_SMS_DISABLED: bool = False
 
+    # --- User invitations (link flow; no MSG91/SMS dependency) ---
+    # Link invitations expire this many hours after creation.
+    INVITATION_EXPIRY_HOURS: int = 24
+
     # --- Seeded admin (created by the seed command) ---
     SEED_ADMIN_EMAIL: str = "admin@mineguard.ai"
     SEED_ADMIN_PASSWORD: str = "Admin@123"

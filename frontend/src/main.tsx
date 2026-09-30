@@ -22,6 +22,7 @@ import ZonesPage from './pages/ZonesPage'
 import CameraEventsPage from './pages/CameraEventsPage'
 import LiveDetectionPage from './pages/LiveDetectionPage'
 import UsersPage from './pages/UsersPage'
+import AcceptInvitationPage from './pages/AcceptInvitationPage'
 import ProfilePage from './pages/ProfilePage'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -31,6 +32,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/accept-invitation/:token" element={<AcceptInvitationPage />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/" element={<App />} />
             <Route path="/dashboard" element={<DashboardPage />} />

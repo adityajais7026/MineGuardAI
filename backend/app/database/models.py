@@ -109,16 +109,35 @@ class OtpChallenge(Base):
 class RoleInvitation(Base):
     """Admin-issued invitation for privileged roles (approval mechanism).
 
-    Minted by an existing administrator for 'admin' or 'environmental_officer'
-    (Government Officer) signups. Single-use, expiring, and consumed at
-    registration. Codes are stored bcrypt-hashed.
+    Minted by an existing administrator to grant any of the four roles. Two
+    credential shapes share this table (both bcrypt-hashed at rest, never
+    stored in plaintext):
+
+      * link invitations  -> `token_hash` holds the hash of a single-use,
+        cryptographically secure URL token (mirrored into code_hash to keep
+        the credential-hash invariant). The raw token is shown to the
+        inviting admin exactly once; the user accepts via
+        POST /auth/invitations/accept/{token} and sets their own password.
+        Mobile is deliberately NOT collected (no MSG91 dependency).
+      * code invitations  -> `code_hash` holds a short code consumed through
+        the existing public registration flow (requires mobile OTP).
+
+    Both are single-use, expiring, and carry an authoritative server-side
+    `role`: the invited user can never choose a different one. Link tokens
+    are bound to `bound_email` when the admin supplies one.
     """
 
     __tablename__ = "role_invitations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)  # admin|environmental_officer
+    role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)  # admin|environmental_officer|mine_manager|safety_officer
+    # Credential hash: short code (code invitations) or URL-token hash (link
+    # invitations) — always populated.
     code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # bcrypt hash of the accept-invitation URL token (link invitations only).
+    token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Display name of the invited person (link invitations).
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invited_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Optional: bind the invitation to one email or mobile.
@@ -132,7 +151,7 @@ class RoleInvitation(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('admin','environmental_officer')",
+            "role IN ('admin','mine_manager','safety_officer','environmental_officer')",
             name="ck_role_invitations_role",
         ),
     )

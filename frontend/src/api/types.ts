@@ -71,6 +71,67 @@ export interface RegisterCompleteRequest {
 /** Successful registration always returns the same JWT shape as login. */
 export type RegisterCompleteResponse = LoginResponse
 
+// ---- User invitations ("Invite User" link flow; no SMS/MSG91 involved) ----
+
+export type InvitableRole = Role
+export type InvitationStatus = 'Pending' | 'Accepted' | 'Expired'
+
+export interface InvitationLink {
+  id: string
+  role: Role
+  invited_name: string
+  invited_email: string
+  /** Shown ONCE, to the inviting admin (who shares the link manually). */
+  invitation_url: string
+  token: string
+  expires_at: string
+}
+
+export interface InvitationSummary {
+  id: string
+  role: Role
+  full_name: string
+  email: string
+  status: InvitationStatus
+  expires_at: string
+  created_at: string
+}
+
+/** What the accept page may show for a valid token (no IDs, no secrets). */
+export interface InvitationPublic {
+  full_name: string
+  email: string
+  role: Role
+  expires_at: string
+}
+
+export interface DeleteUserReport {
+  detail: string
+  user_id: string
+  email: string
+  role: Role
+  detached: Record<string, number>
+  deleted: Record<string, number>
+}
+
+export interface UserDeleteImpact {
+  user_id: string
+  email: string
+  full_name: string
+  role: Role
+  is_active: boolean
+  has_mobile: boolean
+  has_password: boolean
+  affected: {
+    mines_managed: number
+    incidents_reported: number
+    inspections_led: number
+    alerts_assigned: number
+    corrective_actions_assigned: number
+    pending_invitations_to_revoke: number
+  }
+}
+
 export interface Mine {
   id: string
   name: string

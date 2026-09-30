@@ -82,3 +82,43 @@ class InvitationResponse(BaseModel):
     code: str  # shown ONCE, to the inviting admin
     note: str | None = None
     expires_at: datetime
+
+
+# --- "Invite User" link invitations (no mobile, admin sets no password) ---
+
+class InvitationUserCreate(BaseModel):
+    """Admin invite form: Full Name, Email, Role — nothing else.
+
+    The admin does NOT set a password and does NOT collect a mobile number:
+    the invited person sets their own password on the accept page, and the
+    account is created without a mobile (no MSG91 involvement).
+    """
+
+    role: Literal["admin", "environmental_officer", "mine_manager", "safety_officer"]
+    full_name: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=5, max_length=255)
+
+
+class InvitationLinkResponse(BaseModel):
+    id: str
+    role: str
+    invited_name: str
+    invited_email: str
+    invitation_url: str  # shown ONCE, to the inviting admin
+    token: str  # the raw link token (same ONCE constraint as `code` above)
+    expires_at: datetime
+
+
+class InvitationPublicResponse(BaseModel):
+    """What an accept page may show for a valid token — no IDs, no secrets."""
+
+    full_name: str
+    email: str
+    role: str
+    expires_at: datetime
+
+
+class InvitationAcceptRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=72)
+    # Confirmed client-side; server enforces correctness via the two fields.
+    confirm_password: str = Field(min_length=8, max_length=72)
