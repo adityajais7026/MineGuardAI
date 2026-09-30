@@ -14,7 +14,6 @@ from app.api.v1 import (
     inspections,
     live_detect,
     mines,
-    otp_diag,
     restricted_zones,
     risk,
     users,
@@ -38,7 +37,6 @@ all_routers = [
     incidents.router,
     inspections.router,
     corrective_actions.router,
-    otp_diag.router,
 ]
 
 __all__ = ["all_routers"]
