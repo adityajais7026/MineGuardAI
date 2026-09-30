@@ -64,13 +64,25 @@ def mask_mobile(mobile: str) -> str:
     return mobile[:4] + "*" * (len(mobile) - 5) + mobile[-1]
 
 
-def _require_config() -> str:
-    widget_id = settings.MSG91_WIDGET_ID
-    if not settings.MSG91_AUTHKEY:
+def _clean_credential(value: str) -> str:
+    """Deployment paste hardening: strip whitespace and one layer of quotes.
+
+    Dashboard-pasted env values frequently arrive with a trailing space or
+    wrapped in quotes; pydantic keeps them verbatim and MSG91 then rejects
+    every request. Cleaning is idempotent for already-clean values.
+    """
+    return value.strip().strip('"').strip("'").strip()
+
+
+def _require_config() -> tuple[str, str]:
+    """Return (authkey, widget_id), both cleaned; raise if either is absent."""
+    authkey = _clean_credential(settings.MSG91_AUTHKEY)
+    widget_id = _clean_credential(settings.MSG91_WIDGET_ID)
+    if not authkey:
         raise Msg91Error("MSG91 authkey is not configured")
     if not widget_id:
         raise Msg91Error("MSG91 widget id is not configured")
-    return widget_id
+    return authkey, widget_id
 
 
 def send_otp_widget(mobile: str) -> str:
@@ -83,9 +95,9 @@ def send_otp_widget(mobile: str) -> str:
         logger.info("SMS disabled (OTP_SMS_DISABLED) — skipped delivery to %s", mask_mobile(mobile))
         return f"disabled-{uuid.uuid4()}"
 
-    widget_id = _require_config()
+    authkey, widget_id = _require_config()
     url = settings.MSG91_BASE_URL.rstrip("/") + _WIDGET_SEND_ENDPOINT
-    headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json"}
+    headers = {"authkey": authkey, "Content-Type": "application/json"}
     payload = {"widgetId": widget_id, "identifier": mobile}
 
     try:
@@ -101,12 +113,18 @@ def send_otp_widget(mobile: str) -> str:
         body = {}
     # MSG91 may answer request-level errors with HTTP 200 + type:"error".
     if response.status_code >= 400 or str(body.get("type", "")).lower() == "error":
+        provider_error = str(body.get("message", ""))[:80]
         logger.warning(
             "MSG91 widget send rejected (status=%s, provider_error=%s)",
             response.status_code,
-            str(body.get("message", ""))[:80],
+            provider_error,
         )
-        raise Msg91Error("SMS provider rejected the request")
+        # Non-secret reason travels to the API caller so a misconfigured
+        # deployment is identifiable from the register page itself.
+        raise Msg91Error(
+            f"SMS provider rejected the request (status={response.status_code}, "
+            f"provider_error={provider_error})"
+        )
 
     request_id = str(body.get("message", "")).strip()
     if not request_id:
@@ -126,9 +144,9 @@ def verify_otp_widget(request_id: str, code: str) -> bool:
     if settings.OTP_SMS_DISABLED:
         return code == TEST_OTP_CODE
 
-    widget_id = _require_config()
+    authkey, widget_id = _require_config()
     url = settings.MSG91_BASE_URL.rstrip("/") + _WIDGET_VERIFY_ENDPOINT
-    headers = {"authkey": settings.MSG91_AUTHKEY, "Content-Type": "application/json"}
+    headers = {"authkey": authkey, "Content-Type": "application/json"}
     payload = {"widgetId": widget_id, "reqId": request_id, "otp": code}
 
     try:
@@ -143,5 +161,5 @@ def verify_otp_widget(request_id: str, code: str) -> bool:
         body = {}
     if response.status_code >= 400:
         logger.warning("MSG91 widget verify rejected (status=%s)", response.status_code)
-        raise Msg91Error("SMS provider rejected the request")
+        raise Msg91Error(f"SMS provider rejected the request (status={response.status_code})")
     return str(body.get("type", "")).lower() == "success"

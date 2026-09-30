@@ -91,8 +91,14 @@ def _issue_otp(db: Session, *, purpose: str, subject: str, mobile: str) -> OtpSe
         result = otp_service.request_otp(db, purpose=purpose, subject=subject, mobile=mobile)
     except otp_service.OtpError:
         raise
-    except msg91.Msg91Error:
-        raise HTTPException(status_code=502, detail="Could not send the OTP right now. Please try again shortly.")
+    except msg91.Msg91Error as exc:
+        # Include the provider's non-secret reason (config missing, widget
+        # rejected, etc.) so a misconfigured deployment is diagnosable from
+        # the register page. Authkey never appears in Msg91Error text.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not send the OTP right now. Please try again shortly. ({exc})",
+        )
     except Exception:
         logger.exception("OTP request failed (purpose=%s)", purpose)
         raise HTTPException(status_code=500, detail="Could not start OTP verification")
