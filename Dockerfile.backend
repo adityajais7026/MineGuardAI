@@ -1,4 +1,8 @@
-# MineGuardAI backend — FastAPI + uvicorn
+# MineGuardAI backend — FastAPI + uvicorn (Render-ready)
+#
+# Builds from the git repo. YOLO weights are NOT in git (public repo!): the
+# container fetches them at first start from the private WEIGHTS_URL onto the
+# mounted persistent disk (/data), then serves them via YOLO_MODEL_PATH.
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -6,21 +10,34 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
+# libgl1/libglib2.0-0: OpenCV wheels need them on slim images.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# CPU-only torch first (no bundled CUDA libs -> ~10x smaller than PyPI torch),
+# then the pinned requirements (ultralytics pulls its own compatible wheels).
+RUN pip install --no-cache-dir torch==2.4.1 torchvision==0.19.1 \
+      --index-url https://download.pytorch.org/whl/cpu
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code
 COPY backend/app ./app
+COPY docker/entrypoint.sh /app/entrypoint.sh
 
-# Non-root user
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+# Non-root user; /data/weights must be writable for the start-time fetch.
+RUN useradd --create-home appuser \
+    && mkdir -p /data/weights \
+    && chown -R appuser:appuser /app /data/weights
 USER appuser
 
 EXPOSE 8000
 
-# DATABASE_URL / JWT_SECRET_KEY etc. are injected by the environment — never baked in.
+# DATABASE_URL / JWT_SECRET_KEY / WEIGHTS_URL etc. are injected by the
+# environment — never baked in. Render ignores HEALTHCHECK and probes
+# healthCheckPath (/health) itself; PORT-aware for local docker runs.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')" || exit 1
+  CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'))" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bash", "/app/entrypoint.sh"]

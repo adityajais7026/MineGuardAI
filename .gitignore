@@ -19,6 +19,17 @@ snapshots/
 
 # AI model artifacts (never commit model weights)
 ai/yolo/models/*.pt
+
+# --- local-only ML tooling & artifacts (never deploy, never publish) ---
+# Custom PPE training packages are huge (150 MB) and ship dataset binaries.
+# Weights + diagnostics stay on the local machine only.
+backend/tools/
+backend/tmp_diag/
+colab_training_package/
+colab_training_package_v2/
+colab_training_package.zip
+colab_training_package_v2.zip
+mineguardai_colab_datasets.zip
 *.onnx
 
 # Uploaded/annotated media (never commit camera media)

@@ -4,6 +4,10 @@ MineGuardAI ships with production-ready configuration, but **nothing in this rep
 has been deployed** — the steps below must be performed by an operator with the relevant
 accounts. Every secret comes from environment variables; none are committed.
 
+> **Fast path (recommended):** for a public URL via Render.com using the
+> blueprint, follow [RENDER_DEPLOY.md](RENDER_DEPLOY.md) — it wraps the same
+> Dockerfiles with `render.yaml` and a step-by-step dashboard walkthrough.
+
 ## 1. Database — Supabase PostgreSQL
 
 1. Create a Supabase project (region close to your users).

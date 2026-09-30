@@ -1,0 +1,70 @@
+# Render.com blueprint — MineGuardAI public deployment.
+# Full guide: RENDER_DEPLOY.md. Create the services via
+# Render Dashboard -> New -> Blueprint -> pick this repo/branch.
+#
+# Secrets marked `sync: false` are entered once in the Render dashboard and
+# are never stored in this repository. Vyra is the production detector;
+# nothing here changes model, taxonomy, database or existing features.
+services:
+  - type: web
+    name: mineguardai-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.backend
+    plan: free                 # 512 MB; upgrade to starter if OOMs appear
+    healthCheckPath: /health
+    autoDeploy: true
+    numInstances: 1            # single instance: the weights disk is per-service
+    disk:
+      name: mineguard-weights
+      mountPath: /data
+      sizeGB: 2
+    envVars:
+      # --- secrets: set once in the dashboard (never in git) ---
+      - key: DATABASE_URL        # Supabase Postgres session-mode 5432 string
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: WEIGHTS_URL         # private link to vyra_yolov8m_ppe.pt
+        sync: false
+      # --- production detector: Vyra (unchanged) ---
+      - key: AI_DETECTOR
+        value: yolo
+      - key: AI_DETECTOR_STRATEGY
+        value: default
+      - key: YOLO_MODEL_PATH
+        value: /data/weights/vyra_yolov8m_ppe.pt
+      # --- web wiring: exact public frontend origin (see RENDER_DEPLOY.md 3a) ---
+      - key: CORS_ORIGINS
+        value: https://mineguardai-web.onrender.com,http://localhost:5173
+      # --- feature parity with the verified local deployment ---
+      - key: STORAGE_PROVIDER
+        value: supabase
+      - key: AUTH_PROVIDER
+        value: local
+      - key: DEBUG
+        value: "false"
+
+  - type: web
+    name: mineguardai-web
+    runtime: static
+    buildCommand: cd frontend && npm ci --no-fund --no-audit && npm run build
+    staticPublishPath: frontend/dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      # Baked in at build time: the browser calls the public API origin.
+      - key: VITE_API_BASE_URL
+        value: https://mineguardai-api.onrender.com
+    routes:
+      - type: rewrite            # SPA: every path serves index.html
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
