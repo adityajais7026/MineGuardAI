@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # CPU-only torch first (no bundled CUDA libs -> ~10x smaller than PyPI torch),
 # then the pinned requirements (ultralytics pulls its own compatible wheels).
-RUN pip install --no-cache-dir torch==2.4.1 torchvision==0.19.1 \
+# torch 2.14.0/torchvision 0.29.0 are the newest cp313 manylinux builds on the
+# CPU index (2.4.1 predates Python 3.13 -> "No matching distribution"); this
+# exact combo is verified locally with Python 3.13 + ultralytics 8.4.163.
+RUN pip install --no-cache-dir torch==2.14.0+cpu torchvision==0.29.0+cpu \
       --index-url https://download.pytorch.org/whl/cpu
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
