@@ -13,11 +13,15 @@ services:
     plan: free                 # 512 MB; upgrade to starter if OOMs appear
     healthCheckPath: /health
     autoDeploy: true
-    numInstances: 1            # single instance: the weights disk is per-service
-    disk:
-      name: mineguard-weights
-      mountPath: /data
-      sizeGB: 2
+    numInstances: 1            # one instance: weights are fetched per-container start
+    # FREE TIER: no persistent disks. The container filesystem is ephemeral, so
+    # docker/entrypoint.sh re-downloads the Vyra weights from WEIGHTS_URL into
+    # /data/weights on every deploy/restart (~10-20 s on Render's network).
+    # Paid plans can pin them with:
+    # disk:
+    #   name: mineguard-weights
+    #   mountPath: /data
+    #   sizeGB: 2
     envVars:
       # --- secrets: set once in the dashboard (never in git) ---
       - key: DATABASE_URL        # Supabase Postgres session-mode 5432 string
