@@ -8,6 +8,7 @@ numbers (never a real subscriber), and success request ids are redacted.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import socket
 
@@ -32,13 +33,18 @@ def _require_admin(user=Depends(get_current_user)):
 
 
 def _fingerprint(value: str) -> dict:
-    """Shape info only — never any character of the secret itself."""
+    """Shape info only — never any character of the secret itself.
+
+    sha256_8 lets two operators prove value EQUALITY without disclosure:
+    a 32-bit prefix of a high-entropy 27-char key is not reversible.
+    """
     return {
         "len": len(value or ""),
         "alnum_only": bool(re.fullmatch(r"[A-Za-z0-9]+", value or "")),
         "hex24": bool(re.fullmatch(r"[0-9a-f]{24}", value or "")),
         "quoted": bool(value) and value[0] in "\"'" and value[-1] == value[0],
         "has_whitespace": any(ch.isspace() for ch in (value or "")),
+        "sha256_8": hashlib.sha256((value or "").encode()).hexdigest()[:8],
     }
 
 
@@ -100,6 +106,14 @@ def run_probes(_: None = Depends(_require_admin)) -> dict:
         _probe("C_alt_host", _SEND_URL_ALT,
                {**base_headers, "Accept": "application/json"},
                {"widgetId": widget_id, "identifier": _DUMMY}),
+        # Calibration: documented missing-credential behavior is HTTP 401.
+        # If this IP instead gets the generic 403, the block happens BEFORE
+        # auth evaluation => source-level rejection, not a value problem.
+        _probe("D_no_authkey", _SEND_URL,
+               {"Content-Type": "application/json"},
+               {"widgetId": widget_id, "identifier": _DUMMY}),
+        _probe("E_empty_widget", _SEND_URL, base_headers,
+               {"widgetId": "", "identifier": _DUMMY}),
     ]
     egress_ip = None
     try:
