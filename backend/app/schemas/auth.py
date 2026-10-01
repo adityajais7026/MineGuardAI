@@ -4,8 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.user import UserRole
-
 
 class OtpRequestBase(BaseModel):
     mobile: str = Field(min_length=8, max_length=20, description="Mobile number (10-15 digits, any common format)")
@@ -25,12 +23,21 @@ class RegisterStartRequest(OtpRequestBase):
 
 
 class RegisterCompleteRequest(BaseModel):
+    """Final registration step — INVITATION-CODE ONLY.
+
+    `invitation_code` is mandatory: without a valid, unused, unexpired,
+    non-deleted invitation no account is created and no role is selectable.
+    The invitation record is the source of truth for the account's email,
+    full name and role; the client can only supply the OTP-verified mobile
+    (via `token`) and the password.
+    """
+
     token: str = Field(min_length=20, max_length=2000)
     email: str = Field(min_length=5, max_length=255)
-    full_name: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=72)
-    role: UserRole = "safety_officer"
-    invitation_code: str | None = Field(default=None, max_length=200)
+    # Optional here so the endpoint can answer with the friendly "required"
+    # message instead of a field-validation error.
+    invitation_code: str | None = Field(default=None, max_length=64)
 
 
 class RegisterVerifyResponse(BaseModel):
@@ -68,31 +75,15 @@ class LoginVerifyRequest(BaseModel):
     otp: str = Field(min_length=4, max_length=8, pattern=r"^\d{4,8}$")
 
 
-class InvitationCreateRequest(BaseModel):
-    role: Literal["admin", "environmental_officer"]
-    note: str | None = Field(default=None, max_length=255)
-    bound_email: str | None = Field(default=None, max_length=255)
-    bound_mobile: str | None = Field(default=None, max_length=20)
-    expires_in_minutes: int = Field(default=2880, ge=1, le=10080)  # 2 days default, max 7 days
-
-
-class InvitationResponse(BaseModel):
-    id: str
-    role: str
-    code: str  # shown ONCE, to the inviting admin
-    note: str | None = None
-    expires_at: datetime
-
-
-# --- "Invite User" link invitations (admin sets no password, collects no mobile) ---
+# --- Invitation-code management (the ONLY registration path) ---------------
 
 class InvitationUserCreate(BaseModel):
     """Admin invite form: Full Name, Email, Role — nothing else.
 
     The admin does NOT set a password and does NOT collect a mobile number:
-    on the accept page the invited person verifies their OWN mobile via the
-    existing MSG91 OTP flow (purpose=register) and then sets their own
-    password. The account is always created with that verified mobile.
+    the invited person registers with the code + their email, verifies their
+    OWN mobile via the existing MSG91 OTP flow (purpose=register), then sets
+    their own password. The account always receives the invitation's role.
     """
 
     role: Literal["admin", "environmental_officer", "mine_manager", "safety_officer"]
@@ -100,37 +91,46 @@ class InvitationUserCreate(BaseModel):
     email: str = Field(min_length=5, max_length=255)
 
 
-class InvitationLinkResponse(BaseModel):
-    id: str
-    role: str
-    invited_name: str
-    invited_email: str
-    invitation_url: str  # shown ONCE, to the inviting admin
-    token: str  # the raw link token (same ONCE constraint as `code` above)
-    expires_at: datetime
-
-
-class InvitationPublicResponse(BaseModel):
-    """What an accept page may show for a valid token — no IDs, no secrets."""
-
-    full_name: str
-    email: str
-    role: str
-    expires_at: datetime
-
-
-class InvitationAcceptRequest(BaseModel):
-    """Final accept step for the link-invitation flow (mobile pre-verified).
-
-    `mobile` + `token` come from the mobile/verify step: `token` is the
-    single-use pending-registration JWT minted after a successful MSG91 OTP
-    verification (POST /invitations/accept/{link}/mobile/verify) and
-    cryptographically proves `mobile` was verified. It is NOT the invitation
-    link token, which stays in the URL.
+class InvitationCodeResponse(BaseModel):
+    """A created/re-generated invitation. The `code` is the shareable secret:
+    it stays visible to the creator (management list) until the invitation is
+    used, expired or deleted — it is never hidden after creation.
     """
 
-    mobile: str = Field(min_length=8, max_length=20, description="Same mobile the OTP was sent to")
-    token: str = Field(min_length=20, max_length=2000, description="Pending-registration token from the mobile/verify step")
-    password: str = Field(min_length=8, max_length=72)
-    # Confirmed client-side; server enforces correctness via the two fields.
-    confirm_password: str = Field(min_length=8, max_length=72)
+    id: str
+    role: str
+    full_name: str
+    email: str
+    code: str
+    expires_at: datetime
+
+
+class InvitationSummaryResponse(BaseModel):
+    """One row of the admin invitation-management list."""
+
+    id: str
+    role: str
+    full_name: str
+    email: str
+    # Plaintext code while it exists (legacy rows may have None). Never a hash.
+    code: str | None
+    status: Literal["Active", "Used", "Expired", "Deleted"]
+    created_by: str | None  # email of the inviting admin
+    created_at: datetime
+    expires_at: datetime
+
+
+class InvitationValidateRequest(BaseModel):
+    """Public pre-flight check: invitation code + the email it is bound to."""
+
+    code: str = Field(min_length=1, max_length=64)
+    email: str = Field(min_length=5, max_length=255)
+
+
+class InvitationValidateResponse(BaseModel):
+    """What a valid code+email pair may show before the OTP step — the role is
+    fixed by the invitation and never chosen by the registering user."""
+
+    role: str
+    full_name: str
+    expires_at: datetime

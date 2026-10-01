@@ -107,36 +107,42 @@ class OtpChallenge(Base):
 
 
 class RoleInvitation(Base):
-    """Admin-issued invitation for privileged roles (approval mechanism).
+    """Admin-issued invitation — the ONLY way to create a new account.
 
-    Minted by an existing administrator to grant any of the four roles. Two
-    credential shapes share this table (both bcrypt-hashed at rest, never
-    stored in plaintext):
+    Minted by an existing administrator for one of the four roles. Every
+    invitation carries:
+      * `code`            — the human-usable invitation code, stored here so
+        the inviting admin can keep copying it from the management list until
+        the invitation is used, expired or deleted (requirement: the code must
+        NOT become hidden after creation).
+      * `code_hash`       — bcrypt hash of the code (verification credential).
+      * `bound_email`     — the email the invitation is strictly tied to; a
+        registration with any other email is rejected server-side.
+      * `role`            — the account's role, decided ONLY by the invitation.
 
-      * link invitations  -> `token_hash` holds the hash of a single-use,
-        cryptographically secure URL token (mirrored into code_hash to keep
-        the credential-hash invariant). The raw token is shown to the
-        inviting admin exactly once; the user accepts via
-        POST /auth/invitations/accept/{token} and sets their own password.
-        Mobile is deliberately NOT collected (no MSG91 dependency).
-      * code invitations  -> `code_hash` holds a short code consumed through
-        the existing public registration flow (requires mobile OTP).
+    Single-use (consumed atomically with account creation), expiring
+    (INVITATION_EXPIRY_HOURS), soft-deletable (`deleted_at` immediately
+    invalidates the code) and regenerable (new code, same email/role, old
+    code invalidated). Registration additionally requires MSG91 mobile OTP
+    via the existing register-purpose flow — no second OTP system.
 
-    Both are single-use, expiring, and carry an authoritative server-side
-    `role`: the invited user can never choose a different one. Link tokens
-    are bound to `bound_email` when the admin supplies one.
+    Legacy columns kept for schema stability: `token_hash` (old link
+    invitations, flow removed) and `bound_mobile`.
     """
 
     __tablename__ = "role_invitations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)  # admin|environmental_officer|mine_manager|safety_officer
-    # Credential hash: short code (code invitations) or URL-token hash (link
-    # invitations) — always populated.
+    # The invitation code itself, stored so the creator can keep copying it
+    # from the management UI until the invitation is used/expired/deleted.
+    code: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # bcrypt hash of the code — the verification credential.
     code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    # bcrypt hash of the accept-invitation URL token (link invitations only).
+    # Legacy link-invitation hash (flow removed); NULL for code invitations.
     token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Display name of the invited person (link invitations).
+    # Display name of the invited person (shown in the management list and
+    # used as the account's full_name on registration).
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invited_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -146,6 +152,9 @@ class RoleInvitation(Base):
     is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     used_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Soft delete: set when the creator deletes the invitation; the code stops
+    # working immediately and the row stays for audit (status "Deleted").
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 

@@ -51,40 +51,22 @@ export interface RegisterVerifyResponse {
 }
 
 /**
- * Roles selectable on the public registration form. Privileged roles
- * (Government Officer, Administrator) are invitation-only: a valid
- * single-use invitation code grants exactly the role it was minted for,
- * so no privileged role is ever offered in the dropdown.
+ * Roles that can be granted by an admin-issued invitation code. There is no
+ * public registration: every new account is created through a code whose
+ * invitation record (never the client) decides the role.
  */
-export type RegistrableRole = 'mine_manager' | 'safety_officer'
-
-export interface RegisterCompleteRequest {
-  token: string
-  email: string
-  full_name: string
-  password: string
-  /** Public role choice; overridden by the invitation's role when a code is supplied. */
-  role: RegistrableRole
-  invitation_code?: string | null
-}
-
-/** Successful registration always returns the same JWT shape as login. */
-export type RegisterCompleteResponse = LoginResponse
-
-// ---- User invitations ("Invite User" link flow; mobile is OTP-verified via the
-// existing MSG91 register-purpose flow at accept time; admin collects no mobile) ----
-
 export type InvitableRole = Role
-export type InvitationStatus = 'Pending' | 'Accepted' | 'Expired'
+export type InvitationStatus = 'Active' | 'Used' | 'Expired' | 'Deleted'
 
-export interface InvitationLink {
+/** Returned when the admin creates or regenerates an invitation code. */
+export interface InvitationCreated {
   id: string
   role: Role
-  invited_name: string
-  invited_email: string
-  /** Shown ONCE, to the inviting admin (who shares the link manually). */
-  invitation_url: string
-  token: string
+  full_name: string
+  email: string
+  /** The shareable code — stays visible in the management list until the
+   *  invitation is used, expired or deleted (never hidden after creation). */
+  code: string
   expires_at: string
 }
 
@@ -93,18 +75,32 @@ export interface InvitationSummary {
   role: Role
   full_name: string
   email: string
+  /** Plaintext code while it exists (legacy rows may have none). */
+  code: string | null
   status: InvitationStatus
-  expires_at: string
+  created_by: string | null
   created_at: string
+  expires_at: string
 }
 
-/** What the accept page may show for a valid token (no IDs, no secrets). */
-export interface InvitationPublic {
-  full_name: string
-  email: string
+/** Public pre-flight: what a valid code+email pair may show before the OTP step. */
+export interface InvitationValidate {
   role: Role
+  full_name: string
   expires_at: string
 }
+
+/** Final registration step: OTP-verified token + mandatory invitation code.
+ *  The invitation record (server-side) decides email, full name and role. */
+export interface RegisterCompleteRequest {
+  token: string
+  email: string
+  password: string
+  invitation_code: string
+}
+
+/** Successful registration always returns the same JWT shape as login. */
+export type RegisterCompleteResponse = LoginResponse
 
 export interface DeleteUserReport {
   detail: string

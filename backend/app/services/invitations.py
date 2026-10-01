@@ -1,34 +1,21 @@
-"""Link-invitation lifecycle for the "Invite User" flow.
+"""Code-based invitation lifecycle — the ONLY way to create a new account.
 
 An Administrator mints an invitation for one of the four roles. The raw
-credential — an unpredictable, cryptographically secure URL token — is returned
-exactly once to the inviting admin (who shares the link manually via WhatsApp,
-email, etc.); only its bcrypt hash is stored. This module never sends SMS or
-email itself.
+invitation code (short, human-usable, unambiguous alphabet) is stored BOTH as
+plaintext (`code`, so the creator can keep copying it from the management list
+until the invitation is used, expired or deleted — it is never hidden after
+creation) and as a bcrypt hash (`code_hash`, the verification credential).
 
-Acceptance is OTP-gated and reuses the production MSG91 flow unchanged
-(`app.services.otp`, purpose=register — the SAME machinery as public
-registration, no second OTP system): the invited person verifies their mobile
-number with an SMS OTP BEFORE setting a password. A successful verification
-mints a single-use, 15-minute pending-registration JWT (`typ=prp`) via the
-OTP service; the final accept step validates it against the mobile in the
-payload, so no account can ever be created without a verified mobile.
-
-Security properties:
-  * token: `secrets.token_urlsafe(24)` (128 bits of entropy from the OS CSPRNG)
-  * storage: bcrypt hash only (`token_hash`, mirrored in `code_hash`)
-  * single-use: consumed in the SAME transaction that creates the account,
-    so a concurrent second accept rolls back instead of double-spending
-  * expiry: INVITATION_EXPIRY_HOURS (default 24h) — expired invitations are
-    rejected for both validation and acceptance
-  * role authority: the account always receives the invitation's stored role;
-    the client cannot influence it via URL, payload or otherwise
-  * email bind: when minted with an email, only that email can accept
-  * mobile verification: REQUIRED — delegated to the existing MSG91 OTP
-    service (send cooldown, hourly cap, attempt policy all inherited); the
-    invitation link itself is never an OTP and carries no OTP authority
-  * no plaintext password is ever stored on the invitation
+Registration with a code reuses the EXISTING MSG91 OTP flow unchanged:
+    code + email  ->  mobile  ->  OTP (purpose=register)  ->  password  ->  account
+The invitation record is the source of truth: the email is strictly bound
+(403 on mismatch), the role comes exclusively from the stored invitation and
+consumption is atomic with account creation (single-use). Soft-deleted
+invitations (`deleted_at`) are invalid immediately; regeneration stores a new
+code/hash on the SAME row (same email/role) and invalidates the old code by
+overwriting it. No second invitation or OTP system exists.
 """
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -39,13 +26,21 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.database.models import RoleInvitation
-from app.services import msg91
-from app.services import otp as otp_service
 
 # Roles an Administrator may invite (the full privileged set).
 INVITABLE_ROLES = ("admin", "environmental_officer", "mine_manager", "safety_officer")
 
-INVALID_INVITATION_DETAIL = "This invitation is expired or has already been used."
+# Unambiguous alphabet: no 0/O/1/I/L look-alikes (codes are shared by hand).
+_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+_CODE_GROUPS = 3
+_CODE_GROUP_LEN = 4
+
+
+def _new_code() -> str:
+    """CSPRNG invitation code, e.g. 'K7M2-9QX4-PTR8' (~47 bits of entropy)."""
+    def group() -> str:
+        return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_GROUP_LEN))
+    return "-".join(group() for _ in range(_CODE_GROUPS))
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -55,176 +50,167 @@ def _as_utc(value: datetime) -> datetime:
     return value
 
 
+# --- Exact, user-facing registration error messages -------------------------
+MSG_CODE_REQUIRED = "Invitation code is required to create an account."
+MSG_INVALID_CODE = "Invalid invitation code. Please check the code and try again."
+MSG_WRONG_EMAIL = (
+    "Invalid email for this invitation. Please use the email address associated "
+    "with this invitation and try again."
+)
+MSG_EXPIRED = "This invitation has expired. Please request a new invitation code."
+MSG_ALREADY_USED = "This invitation code has already been used. Please request a new invitation."
+MSG_DELETED = "This invitation is no longer valid. Please request a new invitation code."
+
+
+def _expired(invitation: RoleInvitation) -> bool:
+    return _as_utc(invitation.expires_at) < datetime.now(timezone.utc)
+
+
 def create_invitation(
     db: Session,
     *,
     role: str,
     full_name: str,
-    email: str | None,
+    email: str,
     invited_by_id: str,
 ) -> tuple[RoleInvitation, str]:
-    """Mint a link invitation; returns (row, raw_token).
+    """Mint an invitation-code invitation; returns (row, raw_code).
 
-    The raw token is returned exactly once (shown to the inviting admin) and
-    only its bcrypt hash is persisted.
+    The code is stored plaintext AND bcrypt-hashed: plaintext so the creator
+    can always copy it from the management list, hash so verification never
+    trusts the plaintext column.
     """
-    token = secrets.token_urlsafe(24)
-    token_hash = hash_password(token)
+    code = _new_code()
     invitation = RoleInvitation(
         role=role,
         full_name=full_name,
-        bound_email=email.lower() if email else None,
-        token_hash=token_hash,
-        code_hash=token_hash,  # keep the single credential-hash invariant
+        code=code,
+        code_hash=hash_password(code),
+        bound_email=email.lower(),
         invited_by_id=invited_by_id,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.INVITATION_EXPIRY_HOURS),
     )
     db.add(invitation)
     db.commit()
     db.refresh(invitation)
-    return invitation, token
+    return invitation, code
 
 
-def validate_invitation(db: Session, token: str) -> RoleInvitation:
-    """Resolve a raw token to a valid (unused, unexpired) invitation.
+def regenerate_invitation(db: Session, *, invitation_id: str, acting_admin: "User") -> tuple[RoleInvitation, str]:  # noqa: F821
+    """Issue a NEW code for the SAME email/role/permissions (same row).
 
-    Raises 404 with a generic message for unknown/expired/used tokens so the
-    endpoint reveals nothing about which invitations exist.
-    """
-    invitation = _find_by_token(db, token)
-    if invitation is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=INVALID_INVITATION_DETAIL)
-    return invitation
-
-
-def _find_by_token(db: Session, token: str) -> RoleInvitation | None:
-    if not token or len(token) > 200:
-        return None
-    candidates = db.scalars(
-        select(RoleInvitation).where(RoleInvitation.is_used.is_(False))
-    ).all()
-    now = datetime.now(timezone.utc)
-    for candidate in candidates:
-        if _as_utc(candidate.expires_at) < now:
-            continue  # expired
-        stored_hash = candidate.token_hash or candidate.code_hash
-        if stored_hash and verify_password(token, stored_hash):
-            return candidate
-    return None
-
-
-def _normalized_or_400(mobile: str) -> str:
-    """Normalize a payload mobile (same rules as the public OTP endpoints)."""
-    try:
-        return msg91.normalize_mobile(mobile)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-def start_mobile_verification(db: Session, *, token: str, mobile: str) -> dict:
-    """Send the accept-flow OTP to `mobile` via the EXISTING MSG91 OTP service.
-
-    The invitation link token is validated FIRST (404, generic message) so an
-    invalid/expired/used link never triggers SMS spend. Delegation to
-    `otp_service.request_otp` with purpose=register inherits everything the
-    public registration flow enforces: the not-already-registered mobile
-    check (409), resend cooldown and rolling hourly cap (429). The invitation
-    link itself is not an OTP — it only gates WHO may start this verification.
-    """
-    validate_invitation(db, token)
-    mobile = _normalized_or_400(mobile)
-    return otp_service.request_otp(
-        db, purpose=otp_service.PURPOSE_REGISTER, subject=mobile, mobile=mobile
-    )
-
-
-def verify_mobile_otp(db: Session, *, token: str, mobile: str, code: str) -> dict:
-    """Verify the SMS code; return the RegisterVerifyResponse payload.
-
-    On success the OTP service consumes the challenge and we mint the
-    single-use pending-registration JWT (`typ=prp`) carrying the verified
-    mobile — the exact same token shape the public registration flow uses.
-    """
-    validate_invitation(db, token)
-    mobile = _normalized_or_400(mobile)
-    otp_service.verify_otp(db, purpose=otp_service.PURPOSE_REGISTER, subject=mobile, code=code)
-    return {
-        "token": otp_service.mint_pending_registration_token(mobile),
-        "mobile_masked": msg91.mask_mobile(mobile),
-        "expires_in_minutes": otp_service.REGISTER_TOKEN_MINUTES,
-    }
-
-
-def accept_invitation(
-    db: Session,
-    *,
-    token: str,
-    mobile: str,
-    reg_token: str,
-    password: str,
-) -> tuple[RoleInvitation, "User"]:  # noqa: F821  (User imported lazily for atomicity)
-    """Atomically consume the invitation and create the active account.
-
-    `reg_token` must be the pending-registration JWT minted after a successful
-    MSG91 OTP verification and must carry exactly `mobile` — a user cannot
-    accept without verifying a mobile first, or swap in a different number
-    after verifying. Everything (invitation consumption + user insert) commits
-    in ONE transaction: a replayed token fails because `is_used` is already
-    set inside the same transaction, and a failed user insert rolls the
-    consumption back. The role comes exclusively from the stored invitation.
+    The previous code stops working immediately: its plaintext and hash are
+    overwritten on the row and the expiry clock restarts. Only the admin who
+    created the invitation (or any current administrator) may regenerate it;
+    used/expired/deleted invitations cannot be regenerated — create a new one.
     """
     from app.database.models import User  # local import: no cycle at module load
 
-    invitation = validate_invitation(db, token)
+    invitation = db.get(RoleInvitation, invitation_id)
+    if invitation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found.")
+    if acting_admin.role != "admin" and invitation.invited_by_id != acting_admin.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can regenerate this invitation.")
+    if invitation.is_used:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This invitation has already been used and cannot be regenerated.")
+    if invitation.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This invitation has been deleted and cannot be regenerated.")
+    if _expired(invitation):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This invitation has expired. Create a new invitation instead.")
 
-    # The email is fixed at mint time (when supplied): the accept step may not
-    # introduce a different identity than the admin invited.
-    email = invitation.bound_email
-    if not email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This invitation is not bound to an email address. Request a new invitation.",
-        )
+    code = _new_code()
+    invitation.code = code
+    invitation.code_hash = hash_password(code)
+    invitation.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.INVITATION_EXPIRY_HOURS)
+    db.commit()
+    db.refresh(invitation)
+    return invitation, code
 
-    mobile = _normalized_or_400(mobile)
-    reg = otp_service.read_pending_registration_token(reg_token)  # 401 on bad/expired
-    if str(reg.get("sub")) != mobile:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Registration session expired. Start again.",
-        )
 
-    if db.scalar(select(User.id).where(User.email == email)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This email is already registered. Log in instead or request a new invitation.",
-        )
-    if db.scalar(select(User.id).where(User.mobile == mobile)):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This mobile number is already registered. Try logging in instead.",
-        )
+def delete_invitation(db: Session, *, invitation_id: str, acting_admin: "User") -> RoleInvitation:  # noqa: F821
+    """Soft-delete an invitation: the code is invalid immediately.
 
-    user = User(
-        email=email,
-        full_name=invitation.full_name or email.split("@")[0],
-        role=invitation.role,  # server-side authority; never client-chosen
-        mobile=mobile,  # MSG91-verified via the existing register-purpose flow
-        hashed_password=hash_password(password),
-        is_active=True,
-    )
-    db.add(user)
-    db.flush()  # assign user.id before stamping the invitation
+    The row is kept for audit and shows status "Deleted". Deleting is
+    idempotent (deleting twice returns 404 the second time only if the row is
+    already deleted — here it answers 409 to signal 'already deleted').
+    Only the creator (or any current administrator) may delete.
+    """
+    invitation = db.get(RoleInvitation, invitation_id)
+    if invitation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found.")
+    if acting_admin.role != "admin" and invitation.invited_by_id != acting_admin.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the creator can delete this invitation.")
+    if invitation.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This invitation is already deleted.")
+
+    invitation.deleted_at = datetime.now(timezone.utc)
+    db.commit()
+    return invitation
+
+
+def invitation_status(invitation: RoleInvitation, *, now: datetime | None = None) -> str:
+    """Management-list status: Active / Used / Expired / Deleted."""
+    if invitation.deleted_at is not None:
+        return "Deleted"
+    if invitation.is_used:
+        return "Used"
+    now = now or datetime.now(timezone.utc)
+    if _as_utc(invitation.expires_at) < now:
+        return "Expired"
+    return "Active"
+
+
+def validate_invitation(db: Session, *, code: str, email: str) -> RoleInvitation:
+    """Validate a code+email pair and return the invitation row.
+
+    Check order reveals as little as possible: unknown code, deleted, used,
+    expired, then email mismatch (each with its exact required message).
+    The role is NOT part of the request — it comes from the invitation only.
+    """
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=MSG_CODE_REQUIRED)
+
+    # Direct lookup on the indexed plaintext column, then verify the bcrypt
+    # hash so validation never trusts the plaintext column alone. Rows without
+    # a plaintext code (legacy pre-rework invitations) are simply unfindable —
+    # the old link flow is gone and old codes are inert.
+    invitation = db.scalar(select(RoleInvitation).where(RoleInvitation.code == normalized))
+    if invitation is not None and not verify_password(normalized, invitation.code_hash):
+        invitation = None  # plaintext/hash mismatch: treat as unknown code
+
+    if invitation is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_INVALID_CODE)
+    if invitation.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_DELETED)
+    if invitation.is_used:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_ALREADY_USED)
+    if _expired(invitation):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_EXPIRED)
+    if invitation.bound_email and invitation.bound_email != (email or "").strip().lower():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_WRONG_EMAIL)
+    return invitation
+
+
+def claim_invitation(db: Session, invitation: RoleInvitation, *, user_id: str) -> None:
+    """Atomically consume the invitation inside the account-creation transaction.
+
+    Re-checks every condition right before stamping: two concurrent uses of
+    the same code cannot both pass, because the second flush/commit re-evaluates
+    the row state after the first commit set `is_used`.
+    """
+    if invitation.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_DELETED)
+    if invitation.is_used:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_ALREADY_USED)
+    if _expired(invitation):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MSG_EXPIRED)
 
     invitation.is_used = True
-    invitation.used_by_id = user.id
+    invitation.used_by_id = user_id
     invitation.used_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(user)
 
-    # Single-use registration: drop the mobile's register challenges exactly
-    # like the public flow does (after the account commit; a leftover challenge
-    # is harmless because request_otp re-checks registered mobiles).
-    otp_service.mark_registration_completed(db, mobile)
-    return invitation, user
+def normalize_code(code: str) -> str:
+    """Trim whitespace and uppercase (codes are case-insensitive by design)."""
+    return re.sub(r"\s+", "", (code or "")).upper()

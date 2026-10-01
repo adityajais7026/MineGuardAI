@@ -15,6 +15,7 @@ import pytest
 from app.core.config import settings
 from app.core.security import decode_token, hash_password
 from app.database import models
+from app.services import invitations as invitation_service
 from app.services import msg91
 
 BASE = "/api/auth"
@@ -62,19 +63,23 @@ def _start_and_verify(sms_client, otp_capture, mob, purpose="register"):
     return sms_client.post(f"{BASE}/{purpose}/otp/verify", json={"mobile": mob, "otp": code})
 
 
-def _register_payload(sms_client, otp_capture, mob, role="safety_officer", email=None, invitation=None):
+def _invite_code(client, role: str, email: str, full_name: str = "OTP User") -> str:
+    """Mint an invitation code as the admin (registration is code-only)."""
+    r = client.post("/api/users/invite", json={"role": role, "full_name": full_name, "email": email})
+    assert r.status_code == 201, r.text
+    return r.json()["code"]
+
+
+def _register_payload(sms_client, otp_capture, mob, code, email=None):
+    """Final-step payload: OTP-verified token + invitation code (mandatory)."""
     r = _start_and_verify(sms_client, otp_capture, mob)
     assert r.status_code == 200, r.text
-    payload = {
+    return {
         "token": r.json()["token"],
         "email": email or f"user-{mob[-4:]}@test.ai",
-        "full_name": "OTP User",
+        "invitation_code": code,
         "password": "Password!123",
-        "role": role,
     }
-    if invitation:
-        payload["invitation_code"] = invitation
-    return payload
 
 
 def _latest_challenge(db_session, mob, purpose="register"):
@@ -128,36 +133,42 @@ def test_register_verify_returns_single_use_pending_token(sms_client, otp_captur
     assert payload["typ"] == "prp"  # pending-registration, NOT a login token
 
 
-def test_register_complete_creates_active_inspector_and_issues_jwt(sms_client, db_session, otp_capture, mobile):
-    payload = _register_payload(sms_client, otp_capture, mobile)
+def test_register_complete_creates_active_inspector_and_issues_jwt(sms_client, client, db_session, otp_capture, mobile):
+    email = f"inspector-{mobile[-4:]}@test.ai"
+    code = _invite_code(client, "safety_officer", email)
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email=email)
     r = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["access_token"] and body["token_type"] == "bearer"
-    assert body["user"]["role"] == "safety_officer"
+    assert body["user"]["role"] == "safety_officer"  # from the invitation
     assert body["user"]["is_active"] is True
     assert body["user"]["mobile"] == msg91.normalize_mobile(mobile)
 
-    # The JWT is a normal MineGuardAI token: works on /api/auth/me.
-    me = sms_client.get("/api/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
-    assert me.status_code == 200
-    assert me.json()["email"] == payload["email"]
+    # The JWT is a normal MineGuardAI token with the invitation's role.
+    claims = decode_token(body["access_token"])
+    assert claims["role"] == "safety_officer" and claims["iss"] == "mineguardai"
 
     user = db_session.query(models.User).filter_by(email=payload["email"]).first()
     assert user is not None and user.hashed_password.startswith("$2")
 
 
-def test_register_complete_rejects_reused_token(sms_client, otp_capture, mobile):
-    payload = _register_payload(sms_client, otp_capture, mobile)
+def test_register_complete_rejects_reused_token(sms_client, client, otp_capture, mobile):
+    email = f"reuse-{mobile[-4:]}@test.ai"
+    code = _invite_code(client, "safety_officer", email)
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email=email)
     r1 = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r1.status_code == 200
+    # A second completion (same token or same code) cannot create anything.
     r2 = sms_client.post(f"{BASE}/register/complete", json={**payload, "email": "second@test.ai"})
     assert r2.status_code in (400, 401, 403, 409)
 
 
-def test_register_duplicate_email_rejected(sms_client, db_session, otp_capture, mobile):
-    payload = _register_payload(sms_client, otp_capture, mobile)
-    clash = models.User(id="u-otp-clash", email=payload["email"], full_name="Clash",
+def test_register_duplicate_email_rejected(sms_client, client, db_session, otp_capture, mobile):
+    email = f"dup-{mobile[-4:]}@test.ai"
+    code = _invite_code(client, "safety_officer", email)
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email=email)
+    clash = models.User(id="u-otp-clash", email=email, full_name="Clash",
                         role="mine_manager", hashed_password="x")
     db_session.add(clash)
     db_session.commit()
@@ -396,38 +407,40 @@ def test_hourly_send_cap_is_enforced(sms_client, db_session, mobile):
 
 
 # ------------------------------------------------------------------ #
-# 7. Role restrictions
+# 7. Registration policy (INVITATION-CODE ONLY)
 # ------------------------------------------------------------------ #
-def test_admin_self_registration_requires_invitation(sms_client, otp_capture, mobile):
-    payload = _register_payload(sms_client, otp_capture, mobile, role="admin")
+def test_registration_without_code_is_rejected_with_exact_message(sms_client, otp_capture, mobile):
+    """NO PUBLIC REGISTRATION: every role requires a valid invitation code."""
+    payload = _register_payload(sms_client, otp_capture, mobile, code=None)
+    r = sms_client.post(f"{BASE}/register/complete", json=payload)
+    assert r.status_code == 400
+    assert r.json()["detail"] == invitation_service.MSG_CODE_REQUIRED
+
+
+def test_registration_with_invalid_code_is_rejected(sms_client, otp_capture, mobile):
+    email = f"nocode-{mobile[-4:]}@test.ai"
+    payload = _register_payload(sms_client, otp_capture, mobile, code="AAAA-BBBB-CCCC", email=email)
     r = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r.status_code == 403
-    assert "invitation" in r.json()["detail"].lower()
+    assert r.json()["detail"] == invitation_service.MSG_INVALID_CODE
 
 
-def test_government_officer_registration_requires_invitation(sms_client, db_session, otp_capture, mobile):
-    """Government Officer is invitation-only: 403 without a code and NO
-    inactive user row is created (the old pending-approval path is gone)."""
-    payload = _register_payload(sms_client, otp_capture, mobile, role="environmental_officer",
-                                email="gov@test.ai")
+def test_registration_with_wrong_email_for_code_is_rejected(sms_client, client, otp_capture, mobile):
+    """The code is strictly bound to its email — no swapping identities."""
+    code = _invite_code(client, "environmental_officer", "gov-bound@test.ai")
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email="another@test.ai")
     r = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r.status_code == 403
-    assert "invitation" in r.json()["detail"].lower()
-    assert "government officer" in r.json()["detail"].lower()
-    assert db_session.query(models.User).filter_by(email="gov@test.ai").first() is None
-
-    # No account exists, so classic login fails with invalid credentials.
-    r = sms_client.post(f"{BASE}/login", data={"username": "gov@test.ai", "password": "Password!123"})
-    assert r.status_code == 401
+    assert r.json()["detail"] == invitation_service.MSG_WRONG_EMAIL
 
 
-def test_invitation_grants_its_minted_role_to_public_accounts(sms_client, client, otp_capture):
-    """A Government Officer invitation used from the public form (role payload
-    is a public role) still creates an active environmental_officer."""
-    code = client.post(f"{BASE}/invitations", json={"role": "environmental_officer"}).json()["code"]
-    payload = _register_payload(sms_client, otp_capture, _unique_mobile(), role="safety_officer",
+def test_invitation_grants_its_minted_role(sms_client, client, otp_capture):
+    """A Government Officer invitation creates an active environmental_officer
+    even though no role is ever selectable in the payload."""
+    code = _invite_code(client, "environmental_officer", "gov-invited@test.ai")
+    payload = _register_payload(sms_client, otp_capture, _unique_mobile(), code,
                                 email="gov-invited@test.ai")
-    resp = sms_client.post(f"{BASE}/register/complete", json={**payload, "invitation_code": code})
+    resp = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["user"]["role"] == "environmental_officer"
@@ -435,51 +448,31 @@ def test_invitation_grants_its_minted_role_to_public_accounts(sms_client, client
     assert body["access_token"]
 
 
-def test_invitation_role_overrides_payload_role(sms_client, client, otp_capture):
-    """The invitation's minted role is authoritative: a code minted for one
-    privileged role can never be steered to another role via the payload."""
-    code = client.post(f"{BASE}/invitations", json={"role": "admin"}).json()["code"]
-    payload = _register_payload(sms_client, otp_capture, _unique_mobile(),
-                                role="environmental_officer", email="mismatch@test.ai")
-    r = sms_client.post(f"{BASE}/register/complete", json={**payload, "invitation_code": code})
-    assert r.status_code == 200, r.text
-    assert r.json()["user"]["role"] == "admin"
-    assert r.json()["user"]["is_active"] is True
-
-
 def test_admin_registration_with_valid_invitation_succeeds(sms_client, client, db_session, otp_capture, mobile):
-    r = client.post(f"{BASE}/invitations", json={"role": "admin"})
-    assert r.status_code == 201, r.text
-    code = r.json()["code"]
-
-    payload = _register_payload(sms_client, otp_capture, mobile, role="admin")
-    r = sms_client.post(f"{BASE}/register/complete", json={**payload, "invitation_code": code})
+    email = f"admin-new-{mobile[-4:]}@test.ai"
+    code = _invite_code(client, "admin", email)
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email=email)
+    r = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r.status_code == 200, r.text
     assert r.json()["user"]["role"] == "admin"
 
 
 def test_invitation_is_single_use(sms_client, client, otp_capture):
-    code = client.post(f"{BASE}/invitations", json={"role": "admin"}).json()["code"]
-    payload1 = _register_payload(sms_client, otp_capture, _unique_mobile(), role="admin",
-                                 email="admin2@test.ai")
-    assert sms_client.post(f"{BASE}/register/complete",
-                           json={**payload1, "invitation_code": code}).status_code == 200
-    payload2 = _register_payload(sms_client, otp_capture, _unique_mobile(), role="admin",
-                                 email="admin3@test.ai")
-    r = sms_client.post(f"{BASE}/register/complete", json={**payload2, "invitation_code": code})
+    email1, email2 = "admin2@test.ai", "admin3@test.ai"
+    code = _invite_code(client, "admin", email1)
+    payload1 = _register_payload(sms_client, otp_capture, _unique_mobile(), code, email=email1)
+    assert sms_client.post(f"{BASE}/register/complete", json=payload1).status_code == 200
+    payload2 = _register_payload(sms_client, otp_capture, _unique_mobile(), code, email=email2)
+    r = sms_client.post(f"{BASE}/register/complete", json=payload2)
     assert r.status_code == 403
+    assert r.json()["detail"] == invitation_service.MSG_ALREADY_USED
 
 
-def test_invitation_requires_admin(client, as_role):
-    as_role("u-safe-0001")
-    r = client.post(f"{BASE}/invitations", json={"role": "admin"})
-    assert r.status_code == 403
-
-
-def test_mine_manager_public_registration_creates_active_account(sms_client, db_session, otp_capture, mobile):
-    """Positive test: Mine Manager self-registration -> active + JWT."""
-    payload = _register_payload(sms_client, otp_capture, mobile, role="mine_manager",
-                                email="mgr-otp@test.ai")
+def test_mine_manager_registration_with_code_creates_active_account(sms_client, client, db_session, otp_capture, mobile):
+    """Positive test: Mine Manager registration via code -> active + JWT."""
+    email = f"mgr-otp-{mobile[-4:]}@test.ai"
+    code = _invite_code(client, "mine_manager", email)
+    payload = _register_payload(sms_client, otp_capture, mobile, code, email=email)
     r = sms_client.post(f"{BASE}/register/complete", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -489,11 +482,6 @@ def test_mine_manager_public_registration_creates_active_account(sms_client, db_
 
     claims = decode_token(body["access_token"])
     assert claims["role"] == "mine_manager" and claims["iss"] == "mineguardai"
-
-    # The token authorizes normal API access immediately.
-    me = sms_client.get("/api/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
-    assert me.status_code == 200
-    assert me.json()["role"] == "mine_manager"
 
 
 # ------------------------------------------------------------------ #

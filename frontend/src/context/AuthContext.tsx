@@ -10,8 +10,8 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>
   /** OTP step 2 of login: verify the SMS code -> stores the same JWT. */
   loginVerifyOtp: (email: string, otp: string) => Promise<void>
-  /** Full OTP registration; every successful registration issues a JWT
-   *  (privileged roles require a valid invitation code up front). */
+  /** Full OTP registration (invitation-code only; every successful
+   *  registration issues a JWT). */
   register: (payload: RegisterCompleteRequest) => Promise<RegisterCompleteResponse>
   logout: () => void
 }

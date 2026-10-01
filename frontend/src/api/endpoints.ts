@@ -1,7 +1,6 @@
 /** Typed endpoint wrappers — one place where API paths live. */
 import { api } from './client'
 import type {
-
   Alert,
   CameraEvent,
   ComplianceRule,
@@ -11,11 +10,11 @@ import type {
   EnvironmentalReading,
   EvaluationResult,
   IngestResult,
+  InvitationCreated,
+  InvitationSummary,
+  InvitationValidate,
   Incident,
   Inspection,
-  InvitationLink,
-  InvitationPublic,
-  InvitationSummary,
   LoginOtpStartResponse,
   LoginResponse,
   Mine,
@@ -56,6 +55,11 @@ export const authApi = {
     api.post<RegisterVerifyResponse>('/api/auth/register/otp/verify', { mobile, otp }),
   registerComplete: (body: RegisterCompleteRequest) =>
     api.post<RegisterCompleteResponse>('/api/auth/register/complete', body),
+
+  /** Public pre-flight: validate code+email; the response carries the
+   *  invitation-fixed role (the register form never offers a role choice). */
+  validateInvitation: (code: string, email: string) =>
+    api.get<InvitationValidate>('/api/auth/invitations/validate', { code, email }),
 }
 
 export const minesApi = {
@@ -150,35 +154,21 @@ export const usersApi = {
   /** Soft delete retained: deactivate instead of destroying audit history. */
   delete: (id: string) => api.delete<void>(`/api/users/${id}`),
 
-  // --- "Invite User" link invitations (admin) ---
+  // --- Invitation codes (the ONLY registration path; admin-managed) ---
   invite: (body: { full_name: string; email: string; role: string }) =>
-    api.post<InvitationLink>('/api/users/invite', body),
+    api.post<InvitationCreated>('/api/users/invite', body),
   invitations: (params?: ListParams) =>
     api.get<Paginated<InvitationSummary>>('/api/users/invitations', params),
+  /** New code, same email/role; the previous code is invalidated immediately. */
+  regenerateInvitation: (id: string) =>
+    api.post<InvitationCreated>(`/api/users/invitations/${encodeURIComponent(id)}/regenerate`),
+  /** Soft-delete: the code stops working immediately (row kept for audit). */
+  deleteInvitation: (id: string) =>
+    api.delete<{ detail: string }>(`/api/users/invitations/${encodeURIComponent(id)}`),
 
   // --- Permanent deletion (admin, with explicit confirmation in the UI) ---
   deleteImpact: (id: string) => api.get<UserDeleteImpact>(`/api/users/${id}/impact`),
   deletePermanent: (id: string) => api.delete<DeleteUserReport>(`/api/users/${id}/permanent`),
 }
 
-export const invitationsApi = {
-  /** Public: validate an accept-link token (no auth). */
-  get: (token: string) => api.get<InvitationPublic>(`/api/invitations/accept/${encodeURIComponent(token)}`),
-  /** Public step 1: send the MSG91 SMS OTP to the invited person's mobile. */
-  mobileStart: (token: string, mobile: string) =>
-    api.post<OtpSendResponse>(`/api/invitations/accept/${encodeURIComponent(token)}/mobile/start`, { mobile }),
-  /** Public step 2: verify the OTP -> single-use pending-registration token. */
-  mobileVerify: (token: string, mobile: string, otp: string) =>
-    api.post<RegisterVerifyResponse>(`/api/invitations/accept/${encodeURIComponent(token)}/mobile/verify`, {
-      mobile,
-      otp,
-    }),
-  /** Public step 3: consume the invitation; reg token proves the mobile was verified. */
-  accept: (token: string, body: { mobile: string; regToken: string; password: string; confirmPassword: string }) =>
-    api.post<LoginResponse>(`/api/invitations/accept/${encodeURIComponent(token)}`, {
-      mobile: body.mobile,
-      token: body.regToken,
-      password: body.password,
-      confirm_password: body.confirmPassword,
-    }),
-}
+

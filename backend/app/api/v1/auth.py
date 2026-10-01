@@ -1,32 +1,29 @@
 """Authentication endpoints.
 
 Existing flows (unchanged): OAuth2 password login -> MineGuardAI JWT, /me.
-New MSG91 SMS OTP flows share the same JWT + bcrypt machinery:
+MSG91 SMS OTP flows share the same JWT + bcrypt machinery:
 
-    Registration : mobile -> SMS OTP -> verify -> email/name/password/role
-                   -> account (privileged roles gated, see below) -> JWT
+    Registration : code + email -> SMS OTP -> verify -> password
+                   -> account (invitation is the source of truth) -> JWT
     Login        : email+password correct -> SMS OTP to registered mobile
                    -> verify -> same MineGuardAI JWT as password login
 
-Role policy:
-    public registration ... mine_manager, safety_officer (Inspector) -> active
-    Government Officer .. environmental_officer -> INVITATION-ONLY: a valid,
-        single-use, unexpired invitation code minted by an Administrator
-        (POST /api/auth/invitations) is required; the account is created
-        active. There is no public self-registration or pending-approval path.
-    Administrator ...... invitation-only; requires a single-use invitation
-        code minted by an existing admin (POST /api/auth/invitations).
+Role policy (INVITATION-CODE ONLY):
+    EVERY new account requires a valid invitation code minted by an
+    Administrator (POST /api/users/invite). The code is strictly bound to one
+    email, and the invitation record — not the client — decides the account's
+    full name, email and role. There is no public/open registration and no
+    role selection anywhere in the payload.
 
-    A supplied invitation code grants exactly the role it was minted for —
-    the client payload can never elevate itself to a privileged role.
+    Registration flow: code + email -> mobile -> MSG91 OTP (purpose=register,
+    existing machinery, unchanged) -> password -> account (active, JWT).
 
 MSG91 authkey/OTPs never reach the client; OTPs and invitation codes are
 bcrypt-hashed at rest and never logged. Rate limiting: resend cooldown,
 rolling hourly send cap, per-challenge attempt limit.
 """
 import logging
-import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -41,10 +38,9 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.database.models import RoleInvitation, User
+from app.database.models import User
 from app.schemas.auth import (
-    InvitationCreateRequest,
-    InvitationResponse,
+    InvitationValidateResponse,
     LoginStartRequest,
     LoginStartResponse,
     LoginVerifyRequest,
@@ -56,6 +52,7 @@ from app.schemas.auth import (
 )
 from app.schemas.user import UserResponse
 from app.services import msg91
+from app.services import invitations as invitation_service
 from app.services import otp as otp_service
 
 logger = logging.getLogger(__name__)
@@ -70,10 +67,6 @@ def _as_utc(value: datetime) -> datetime:
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 DbSession = Annotated[Session, Depends(get_db)]
-
-PUBLIC_SELF_SERVICE_ROLES = {"mine_manager", "safety_officer"}
-INVITATION_ONLY_ROLES = {"admin", "environmental_officer"}
-_ROLE_LABELS = {"admin": "Administrator", "environmental_officer": "Government Officer"}
 
 
 def _login_response(user: User) -> dict:
@@ -221,120 +214,77 @@ def register_otp_verify(db: DbSession, payload: OtpVerifyRequest):
 
 @router.post("/register/complete")
 def register_complete(db: DbSession, payload: RegisterCompleteRequest):
-    """Step 3: create the account from the pending-registration token.
+    """Step 3: create the account — INVITATION-CODE ONLY.
 
-    Role gating:
-      * mine_manager / safety_officer -> created active (public self-service).
-      * admin / environmental_officer -> invitation-only: a valid single-use,
-        unexpired invitation code minted by an Administrator is required and
-        grants exactly its minted role; the account is created active.
+    The invitation (valid code + matching bound email, unused, unexpired, not
+    deleted) is validated server-side and is the source of truth for the
+    account's email, full name and role. The client cannot choose or change a
+    role; without a valid invitation no account is created.
     """
-    reg = otp_service.read_pending_registration_token(payload.token)
-    mobile = str(reg["sub"])
-    invitation_code = payload.invitation_code or reg.get("inv")
-
-    role = payload.role
-    if role not in PUBLIC_SELF_SERVICE_ROLES | INVITATION_ONLY_ROLES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role for registration.")
-
-    # Privileged roles are invitation-only: any supplied code must be valid
-    # (single-use, unexpired, binds honored) and grants exactly the role it
-    # was minted for — never a public self-service role.
-    invitation: RoleInvitation | None = None
-    if invitation_code:
-        invitation = _consume_invitation(db, code=invitation_code, email=payload.email, mobile=mobile)
-        role = invitation.role
-    elif role in INVITATION_ONLY_ROLES:
+    code = invitation_service.normalize_code(payload.invitation_code or "")
+    if not code:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"{_ROLE_LABELS[role]} accounts require an invitation code from an existing administrator.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=invitation_service.MSG_CODE_REQUIRED,
         )
 
-    if db.scalar(select(User).where(User.email == payload.email)):
+    invitation = invitation_service.validate_invitation(db, code=code, email=payload.email)
+
+    reg = otp_service.read_pending_registration_token(payload.token)
+    mobile = str(reg["sub"])
+
+    # The invitation's bound email is authoritative (strict email-code tie).
+    email = invitation.bound_email or payload.email.strip().lower()
+    if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.")
     if db.scalar(select(User).where(User.mobile == mobile)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Mobile already registered.")
 
     user = User(
-        email=payload.email,
-        full_name=payload.full_name,
-        role=role,
+        email=email,
+        full_name=invitation.full_name or email.split("@")[0],
+        role=invitation.role,  # invitation is authoritative; never client-chosen
         mobile=mobile,
         hashed_password=hash_password(payload.password),
         is_active=True,
     )
     db.add(user)
+    db.flush()  # assign user.id before stamping the invitation
     try:
+        # Atomic single-use consumption in the SAME transaction as the insert:
+        # two concurrent registrations with one code cannot both succeed.
+        invitation_service.claim_invitation(db, invitation, user_id=user.id)
         db.commit()
         db.refresh(user)
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         logger.exception("Registration commit failed")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registration failed")
-
-    if invitation is not None:
-        invitation.is_used = True
-        invitation.used_by_id = user.id
-        invitation.used_at = datetime.now(timezone.utc)
-        db.commit()
 
     otp_service.mark_registration_completed(db, mobile)
 
     return _login_response(user)
 
 
-def _consume_invitation(db: Session, *, code: str, email: str, mobile: str) -> RoleInvitation:
-    """Validate an unused, unexpired invitation honoring its email/mobile binds.
+@router.get("/invitations/validate", response_model=InvitationValidateResponse)
+def validate_invitation_code(db: DbSession, code: str, email: str):
+    """Public pre-flight: is this code+email pair registrable right now?
 
-    Codes are bcrypt-hashed, so candidates are checked individually. The
-    invitation's role is authoritative: callers must use invitation.role (a
-    code never grants a public self-service role).
+    Runs the exact server-side checks registration enforces (valid code, not
+    deleted, not used, not expired, email strictly bound) so the register form
+    can show the invitation-fixed role before the OTP step. For a correct
+    pair it reveals only the invited name/role/expiry — never internal IDs or
+    hashes. The role is NOT a request input; it comes from the invitation.
     """
-    candidates = db.scalars(select(RoleInvitation).where(RoleInvitation.is_used.is_(False))).all()
-    now = datetime.now(timezone.utc)
-    for candidate in candidates:
-        if _as_utc(candidate.expires_at) < now:
-            continue
-        if candidate.bound_email and candidate.bound_email.lower() != email.lower():
-            continue
-        if candidate.bound_mobile and candidate.bound_mobile != mobile:
-            continue
-        if verify_password(code, candidate.code_hash):
-            return candidate
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Invalid, expired or already-used invitation code.",
+    invitation = invitation_service.validate_invitation(db, code=code, email=email)
+    return InvitationValidateResponse(
+        role=invitation.role,
+        full_name=invitation.full_name or "",
+        expires_at=invitation.expires_at,
     )
-
-
-@router.post("/invitations", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
-def create_invitation(
-    db: DbSession,
-    payload: InvitationCreateRequest,
-    current: Annotated[User, Depends(get_current_user)],
-):
-    """Administrator-only: mint a single-use invitation for a privileged role.
-
-    The raw code is returned exactly once (to the inviting admin) and stored
-    bcrypt-hashed.
-    """
-    if current.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator privileges required")
-    code = secrets.token_urlsafe(24)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=payload.expires_in_minutes)
-    inv = RoleInvitation(
-        role=payload.role,
-        code_hash=hash_password(code),
-        invited_by_id=current.id,
-        note=payload.note,
-        bound_email=payload.bound_email,
-        bound_mobile=msg91.normalize_mobile(payload.bound_mobile) if payload.bound_mobile else None,
-        expires_at=expires_at,
-    )
-    db.add(inv)
-    db.commit()
-    db.refresh(inv)
-    return InvitationResponse(id=inv.id, role=inv.role, code=code, note=inv.note, expires_at=inv.expires_at)
 
 
 @router.get("/me", response_model=UserResponse)

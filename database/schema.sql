@@ -24,6 +24,11 @@
 -- EXISTING DEPLOYMENTS (user-invitations phase): role_invitations gained two
 -- nullable columns (token_hash, full_name) and a widened role CHECK. Apply with:
 --   database/migrations/2026-10-01_user_invitations.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (invitation-code phase): role_invitations gained the
+-- plaintext `code` column (creator-visible until used/expired/deleted), the
+-- `deleted_at` soft-delete column and a code lookup index. Apply with:
+--   database/migrations/2026-10-02_invitation_codes.sql  (idempotent)
 -- ============================================================================
 
 BEGIN;
@@ -83,6 +88,7 @@ CREATE INDEX IF NOT EXISTS ix_otp_subject_purpose ON otp_challenges (subject, pu
 CREATE TABLE IF NOT EXISTS role_invitations (
     id             VARCHAR(36)  PRIMARY KEY,
     role           VARCHAR(40)  NOT NULL,
+    code           VARCHAR(255),
     code_hash      VARCHAR(255) NOT NULL,
     token_hash     VARCHAR(255),
     full_name      VARCHAR(255),
@@ -93,12 +99,14 @@ CREATE TABLE IF NOT EXISTS role_invitations (
     is_used        BOOLEAN      NOT NULL DEFAULT FALSE,
     used_by_id     VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
     used_at        TIMESTAMPTZ,
+    deleted_at     TIMESTAMPTZ,
     expires_at     TIMESTAMPTZ  NOT NULL,
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_role_invitations_role CHECK (role IN ('admin', 'mine_manager', 'safety_officer', 'environmental_officer'))
 );
 CREATE INDEX IF NOT EXISTS ix_role_invitations_role ON role_invitations (role);
 CREATE INDEX IF NOT EXISTS ix_role_invitations_is_used ON role_invitations (is_used);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_code ON role_invitations (code);
 CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_email ON role_invitations (bound_email);
 CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_mobile ON role_invitations (bound_mobile);
 

@@ -12,7 +12,6 @@ from app.api.v1 import (
     environmental_readings,
     incidents,
     inspections,
-    invitations,
     live_detect,
     mines,
     restricted_zones,
@@ -40,7 +39,6 @@ all_routers = [
     incidents.router,
     inspections.router,
     corrective_actions.router,
-    invitations.router,
 ]
 
 __all__ = ["all_routers"]

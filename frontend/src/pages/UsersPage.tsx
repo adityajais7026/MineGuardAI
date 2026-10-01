@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { usersApi } from '../api/endpoints'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
-import type { InvitationLink, InvitationSummary, User, UserDeleteImpact } from '../api/types'
+import type { InvitationCreated, InvitationSummary, User, UserDeleteImpact } from '../api/types'
 import {
   Badge, EmptyState, ErrorState, Loading, Modal, PageHeader,
 } from '../components/ui'
@@ -21,19 +21,58 @@ const ROLE_LABEL: Record<string, string> = {
   environmental_officer: 'Government Officer',
 }
 
+const STATUS_TONE: Record<string, 'ok' | 'warn' | 'muted' | 'danger'> = {
+  Active: 'warn',
+  Used: 'ok',
+  Expired: 'muted',
+  Deleted: 'danger',
+}
+
 const EMPTY_INVITE_FORM = { full_name: '', email: '', role: 'safety_officer' }
+
+/** Copy exactly `text` — no extra whitespace/quotes — with a legacy fallback. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
 
 export default function UsersPage() {
   const { data, loading, error, refetch } = useApiResource(() => usersApi.list({ limit: 200 }), [])
   const { data: invitations, refetch: refetchInvitations } = useApiResource(
-    () => usersApi.invitations({ limit: 20 }), [],
+    () => usersApi.invitations({ limit: 50 }), [],
   )
 
   const [showInvite, setShowInvite] = useState(false)
   const [inviteForm, setInviteForm] = useState(EMPTY_INVITE_FORM)
   const [inviteError, setInviteError] = useState<string | null>(null)
-  const [createdLink, setCreatedLink] = useState<InvitationLink | null>(null)
-  const [linkCopied, setLinkCopied] = useState(false)
+  const [createdInvitation, setCreatedInvitation] = useState<InvitationCreated | null>(null)
+  const [createdKind, setCreatedKind] = useState<'created' | 'regenerated'>('created')
+  const [createdCopied, setCreatedCopied] = useState(false)
+
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copyFailed, setCopyFailed] = useState<string | null>(null)
+
+  const [regenBusy, setRegenBusy] = useState<string | null>(null)
+  const [invDeleteTarget, setInvDeleteTarget] = useState<InvitationSummary | null>(null)
+  const [invDeleteBusy, setInvDeleteBusy] = useState(false)
+  const [invDeleteError, setInvDeleteError] = useState<string | null>(null)
 
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null)
   const [deleteImpact, setDeleteImpact] = useState<UserDeleteImpact | null>(null)
@@ -64,9 +103,10 @@ export default function UsersPage() {
     }
     setBusy(true)
     try {
-      const link = await usersApi.invite(inviteForm)
-      setCreatedLink(link)
-      setLinkCopied(false)
+      const invitation = await usersApi.invite(inviteForm)
+      setCreatedKind('created')
+      setCreatedInvitation(invitation)
+      setCreatedCopied(false)
       setInviteForm(EMPTY_INVITE_FORM)
       refetchInvitations()
     } catch (err) {
@@ -76,14 +116,54 @@ export default function UsersPage() {
     }
   }
 
-  async function handleCopyLink() {
-    if (!createdLink) return
+  async function handleCopyInvitationCode(inv: { id: string; code: string | null }) {
+    if (!inv.code) return
+    const ok = await copyText(inv.code)
+    if (ok) {
+      setCopyFailed(null)
+      setCopiedId(inv.id)
+      setTimeout(() => setCopiedId((current) => (current === inv.id ? null : current)), 2000)
+    } else {
+      setCopiedId(null)
+      setCopyFailed(inv.id)
+      setTimeout(() => setCopyFailed((current) => (current === inv.id ? null : current)), 4000)
+    }
+  }
+
+  async function handleCopyCreatedCode() {
+    if (!createdInvitation) return
+    const ok = await copyText(createdInvitation.code)
+    setCreatedCopied(ok)
+  }
+
+  async function handleRegenerate(inv: InvitationSummary) {
+    setRegenBusy(inv.id)
+    setInviteError(null)
     try {
-      await navigator.clipboard.writeText(createdLink.invitation_url)
-      setLinkCopied(true)
-    } catch {
-      // Clipboard unavailable (permissions/insecure context): fall back to manual selection.
-      setLinkCopied(false)
+      const fresh = await usersApi.regenerateInvitation(inv.id)
+      setCreatedKind('regenerated')
+      setCreatedInvitation(fresh)
+      setCreatedCopied(false)
+      refetchInvitations()
+    } catch (err) {
+      setInviteError(err instanceof ApiError ? err.message : 'Could not regenerate the code.')
+    } finally {
+      setRegenBusy(null)
+    }
+  }
+
+  async function handleDeleteInvitation() {
+    if (!invDeleteTarget) return
+    setInvDeleteBusy(true)
+    setInvDeleteError(null)
+    try {
+      await usersApi.deleteInvitation(invDeleteTarget.id)
+      setInvDeleteTarget(null)
+      refetchInvitations()
+    } catch (err) {
+      setInvDeleteError(err instanceof ApiError ? err.message : 'Could not delete the invitation.')
+    } finally {
+      setInvDeleteBusy(false)
     }
   }
 
@@ -115,16 +195,12 @@ export default function UsersPage() {
   if (loading) return <Loading />
   if (error) return <div className="page"><ErrorState message={error} onRetry={refetch} /></div>
 
-  const absoluteInviteLink = createdLink
-    ? new URL(createdLink.invitation_url, window.location.origin).toString()
-    : ''
-
   return (
     <div className="page">
       <PageHeader
         title="User Management"
         subtitle="Admin-only section"
-        actions={<button className="btn btn-primary" onClick={() => { setShowInvite(true); setCreatedLink(null); setInviteError(null) }}>+ Invite user</button>}
+        actions={<button className="btn btn-primary" onClick={() => { setShowInvite(true); setCreatedInvitation(null); setInviteError(null) }}>+ Invite user</button>}
       />
 
       {deleteSuccess && (
@@ -166,23 +242,63 @@ export default function UsersPage() {
       {invitations && invitations.items.length > 0 && (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>Invitations</h3>
+          {inviteError && <div className="form-error" role="alert">{inviteError}</div>}
           <table className="table">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Expires</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Name</th><th>Email</th><th>Role</th><th>Invitation code</th>
+                <th>Status</th><th>Created by</th><th>Created</th><th>Expires</th><th />
+              </tr>
+            </thead>
             <tbody>
-              {invitations.items.map((inv: InvitationSummary) => (
-                <tr key={inv.id}>
-                  <td>{inv.full_name}</td>
-                  <td><code>{inv.email}</code></td>
-                  <td><Badge text={ROLE_LABEL[inv.role] ?? inv.role.replace(/_/g, ' ')} tone="info" /></td>
-                  <td>
-                    <Badge
-                      text={inv.status}
-                      tone={inv.status === 'Pending' ? 'warn' : inv.status === 'Accepted' ? 'ok' : 'muted'}
-                    />
-                  </td>
-                  <td className="muted">{new Date(inv.expires_at).toLocaleString()}</td>
-                </tr>
-              ))}
+              {invitations.items.map((inv: InvitationSummary) => {
+                const copyable = inv.code !== null && (inv.status === 'Active' || inv.status === 'Expired')
+                return (
+                  <tr key={inv.id}>
+                    <td>{inv.full_name}</td>
+                    <td><code>{inv.email}</code></td>
+                    <td><Badge text={ROLE_LABEL[inv.role] ?? inv.role.replace(/_/g, ' ')} tone="info" /></td>
+                    <td>
+                      {inv.code ? <code style={{ wordBreak: 'break-all' }}>{inv.code}</code> : <span className="muted">—</span>}
+                    </td>
+                    <td><Badge text={inv.status} tone={STATUS_TONE[inv.status] ?? 'muted'} /></td>
+                    <td className="muted">{inv.created_by ?? '—'}</td>
+                    <td className="muted">{new Date(inv.created_at).toLocaleString()}</td>
+                    <td className="muted">{new Date(inv.expires_at).toLocaleString()}</td>
+                    <td className="table-actions">
+                      {copyable && (
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => handleCopyInvitationCode(inv)}
+                          title="Copy the complete invitation code"
+                        >
+                          {copiedId === inv.id ? 'Copied!' : 'Copy code'}
+                        </button>
+                      )}
+                      {inv.status === 'Active' && (
+                        <button
+                          className="btn btn-sm"
+                          disabled={regenBusy === inv.id}
+                          onClick={() => handleRegenerate(inv)}
+                          title="Issue a new code for the same email and role; the old code stops working"
+                        >
+                          {regenBusy === inv.id ? '…' : 'Regenerate'}
+                        </button>
+                      )}
+                      {(inv.status === 'Active' || inv.status === 'Expired') && (
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => { setInvDeleteError(null); setInvDeleteTarget(inv) }}
+                          title="Delete this invitation; its code becomes invalid immediately"
+                        >
+                          Delete
+                        </button>
+                      )}
+                      {copyFailed === inv.id && <span className="form-error">Copy failed — select the code manually.</span>}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -190,27 +306,31 @@ export default function UsersPage() {
 
       {showInvite && (
         <Modal title="Invite user" onClose={() => setShowInvite(false)}>
-          {createdLink ? (
+          {createdInvitation ? (
             <div>
-              <p><Badge text="Invitation created successfully." tone="ok" /></p>
+              <p><Badge text={createdKind === 'created' ? 'Invitation created successfully.' : 'New code issued — the previous code is now invalid.'} tone="ok" /></p>
               <p className="muted">
-                Share this single-use link with <strong>{createdLink.invited_name}</strong> (
-                {createdLink.invited_email}) via WhatsApp, email, etc. It expires{' '}
-                {new Date(createdLink.expires_at).toLocaleString()} and is shown only once — copy it now.
+                Share this single-use code with <strong>{createdInvitation.full_name}</strong> ({createdInvitation.email}).
+                They register with the code + this exact email, verify their mobile via SMS OTP, and set
+                their own password. It expires {new Date(createdInvitation.expires_at).toLocaleString()} and stays
+                visible in the invitation list until it is used, expired or deleted.
               </p>
-              <code style={{ display: 'block', padding: 8, wordBreak: 'break-all' }}>{absoluteInviteLink}</code>
+              <code style={{ display: 'block', padding: 8, wordBreak: 'break-all', fontSize: '1.2em' }}>
+                {createdInvitation.code}
+              </code>
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button className="btn btn-primary" onClick={handleCopyLink}>
-                  {linkCopied ? 'Copied!' : 'Copy Invitation Link'}
+                <button className="btn btn-primary" onClick={handleCopyCreatedCode}>
+                  {createdCopied ? 'Copied!' : 'Copy invitation code'}
                 </button>
-                <button className="btn" onClick={() => { setShowInvite(false); setCreatedLink(null) }}>Done</button>
+                <button className="btn" onClick={() => { setShowInvite(false); setCreatedInvitation(null) }}>Done</button>
               </div>
             </div>
           ) : (
             <form onSubmit={handleInvite} className="form-grid">
               <p className="muted" style={{ marginTop: 0 }}>
-                The invited person sets their own password on the invitation page. No password and no
-                mobile number are collected here.
+                Creates an invitation code bound to this exact email. The invited person sets their own
+                password after verifying their mobile via SMS OTP. No password and no mobile number are
+                collected here.
               </p>
               <label>Full name
                 <input value={inviteForm.full_name} autoFocus
@@ -232,6 +352,27 @@ export default function UsersPage() {
               </button>
             </form>
           )}
+        </Modal>
+      )}
+
+      {invDeleteTarget && (
+        <Modal title="Delete invitation" onClose={() => setInvDeleteTarget(null)}>
+          <p>
+            <strong>
+              Delete the invitation for {invDeleteTarget.full_name} ({invDeleteTarget.email})?
+            </strong>
+          </p>
+          <p className="muted">
+            Code <code>{invDeleteTarget.code ?? '—'}</code> becomes invalid immediately and cannot be
+            used to register. This cannot be undone.
+          </p>
+          {invDeleteError && <div className="form-error" role="alert">{invDeleteError}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn" onClick={() => setInvDeleteTarget(null)} disabled={invDeleteBusy}>Cancel</button>
+            <button className="btn btn-danger" onClick={handleDeleteInvitation} disabled={invDeleteBusy}>
+              {invDeleteBusy ? 'Deleting…' : 'Delete invitation'}
+            </button>
+          </div>
         </Modal>
       )}
 
