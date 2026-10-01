@@ -84,14 +84,15 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
 
 
-# --- "Invite User" link invitations (no mobile, admin sets no password) ---
+# --- "Invite User" link invitations (admin sets no password, collects no mobile) ---
 
 class InvitationUserCreate(BaseModel):
     """Admin invite form: Full Name, Email, Role — nothing else.
 
     The admin does NOT set a password and does NOT collect a mobile number:
-    the invited person sets their own password on the accept page, and the
-    account is created without a mobile (no MSG91 involvement).
+    on the accept page the invited person verifies their OWN mobile via the
+    existing MSG91 OTP flow (purpose=register) and then sets their own
+    password. The account is always created with that verified mobile.
     """
 
     role: Literal["admin", "environmental_officer", "mine_manager", "safety_officer"]
@@ -119,6 +120,17 @@ class InvitationPublicResponse(BaseModel):
 
 
 class InvitationAcceptRequest(BaseModel):
+    """Final accept step for the link-invitation flow (mobile pre-verified).
+
+    `mobile` + `token` come from the mobile/verify step: `token` is the
+    single-use pending-registration JWT minted after a successful MSG91 OTP
+    verification (POST /invitations/accept/{link}/mobile/verify) and
+    cryptographically proves `mobile` was verified. It is NOT the invitation
+    link token, which stays in the URL.
+    """
+
+    mobile: str = Field(min_length=8, max_length=20, description="Same mobile the OTP was sent to")
+    token: str = Field(min_length=20, max_length=2000, description="Pending-registration token from the mobile/verify step")
     password: str = Field(min_length=8, max_length=72)
     # Confirmed client-side; server enforces correctness via the two fields.
     confirm_password: str = Field(min_length=8, max_length=72)

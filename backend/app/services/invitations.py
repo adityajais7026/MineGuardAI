@@ -3,8 +3,16 @@
 An Administrator mints an invitation for one of the four roles. The raw
 credential — an unpredictable, cryptographically secure URL token — is returned
 exactly once to the inviting admin (who shares the link manually via WhatsApp,
-email, etc.); only its bcrypt hash is stored. No email/SMS is ever sent and
-MSG91 is not involved in any way.
+email, etc.); only its bcrypt hash is stored. This module never sends SMS or
+email itself.
+
+Acceptance is OTP-gated and reuses the production MSG91 flow unchanged
+(`app.services.otp`, purpose=register — the SAME machinery as public
+registration, no second OTP system): the invited person verifies their mobile
+number with an SMS OTP BEFORE setting a password. A successful verification
+mints a single-use, 15-minute pending-registration JWT (`typ=prp`) via the
+OTP service; the final accept step validates it against the mobile in the
+payload, so no account can ever be created without a verified mobile.
 
 Security properties:
   * token: `secrets.token_urlsafe(24)` (128 bits of entropy from the OS CSPRNG)
@@ -16,6 +24,9 @@ Security properties:
   * role authority: the account always receives the invitation's stored role;
     the client cannot influence it via URL, payload or otherwise
   * email bind: when minted with an email, only that email can accept
+  * mobile verification: REQUIRED — delegated to the existing MSG91 OTP
+    service (send cooldown, hourly cap, attempt policy all inherited); the
+    invitation link itself is never an OTP and carries no OTP authority
   * no plaintext password is ever stored on the invitation
 """
 import secrets
@@ -28,6 +39,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.database.models import RoleInvitation
+from app.services import msg91
+from app.services import otp as otp_service
 
 # Roles an Administrator may invite (the full privileged set).
 INVITABLE_ROLES = ("admin", "environmental_officer", "mine_manager", "safety_officer")
@@ -100,17 +113,64 @@ def _find_by_token(db: Session, token: str) -> RoleInvitation | None:
     return None
 
 
+def _normalized_or_400(mobile: str) -> str:
+    """Normalize a payload mobile (same rules as the public OTP endpoints)."""
+    try:
+        return msg91.normalize_mobile(mobile)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def start_mobile_verification(db: Session, *, token: str, mobile: str) -> dict:
+    """Send the accept-flow OTP to `mobile` via the EXISTING MSG91 OTP service.
+
+    The invitation link token is validated FIRST (404, generic message) so an
+    invalid/expired/used link never triggers SMS spend. Delegation to
+    `otp_service.request_otp` with purpose=register inherits everything the
+    public registration flow enforces: the not-already-registered mobile
+    check (409), resend cooldown and rolling hourly cap (429). The invitation
+    link itself is not an OTP — it only gates WHO may start this verification.
+    """
+    validate_invitation(db, token)
+    mobile = _normalized_or_400(mobile)
+    return otp_service.request_otp(
+        db, purpose=otp_service.PURPOSE_REGISTER, subject=mobile, mobile=mobile
+    )
+
+
+def verify_mobile_otp(db: Session, *, token: str, mobile: str, code: str) -> dict:
+    """Verify the SMS code; return the RegisterVerifyResponse payload.
+
+    On success the OTP service consumes the challenge and we mint the
+    single-use pending-registration JWT (`typ=prp`) carrying the verified
+    mobile — the exact same token shape the public registration flow uses.
+    """
+    validate_invitation(db, token)
+    mobile = _normalized_or_400(mobile)
+    otp_service.verify_otp(db, purpose=otp_service.PURPOSE_REGISTER, subject=mobile, code=code)
+    return {
+        "token": otp_service.mint_pending_registration_token(mobile),
+        "mobile_masked": msg91.mask_mobile(mobile),
+        "expires_in_minutes": otp_service.REGISTER_TOKEN_MINUTES,
+    }
+
+
 def accept_invitation(
     db: Session,
     *,
     token: str,
+    mobile: str,
+    reg_token: str,
     password: str,
 ) -> tuple[RoleInvitation, "User"]:  # noqa: F821  (User imported lazily for atomicity)
     """Atomically consume the invitation and create the active account.
 
-    Everything (invitation consumption + user insert) commits in ONE
-    transaction: a replayed token fails because `is_used` is already set
-    inside the same transaction, and a failed user insert rolls the
+    `reg_token` must be the pending-registration JWT minted after a successful
+    MSG91 OTP verification and must carry exactly `mobile` — a user cannot
+    accept without verifying a mobile first, or swap in a different number
+    after verifying. Everything (invitation consumption + user insert) commits
+    in ONE transaction: a replayed token fails because `is_used` is already
+    set inside the same transaction, and a failed user insert rolls the
     consumption back. The role comes exclusively from the stored invitation.
     """
     from app.database.models import User  # local import: no cycle at module load
@@ -126,17 +186,30 @@ def accept_invitation(
             detail="This invitation is not bound to an email address. Request a new invitation.",
         )
 
+    mobile = _normalized_or_400(mobile)
+    reg = otp_service.read_pending_registration_token(reg_token)  # 401 on bad/expired
+    if str(reg.get("sub")) != mobile:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Registration session expired. Start again.",
+        )
+
     if db.scalar(select(User.id).where(User.email == email)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This email is already registered. Log in instead or request a new invitation.",
+        )
+    if db.scalar(select(User.id).where(User.mobile == mobile)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This mobile number is already registered. Try logging in instead.",
         )
 
     user = User(
         email=email,
         full_name=invitation.full_name or email.split("@")[0],
         role=invitation.role,  # server-side authority; never client-chosen
-        mobile=None,  # link invitations never touch MSG91/SMS
+        mobile=mobile,  # MSG91-verified via the existing register-purpose flow
         hashed_password=hash_password(password),
         is_active=True,
     )
@@ -149,4 +222,9 @@ def accept_invitation(
 
     db.commit()
     db.refresh(user)
+
+    # Single-use registration: drop the mobile's register challenges exactly
+    # like the public flow does (after the account commit; a leftover challenge
+    # is harmless because request_otp re-checks registered mobiles).
+    otp_service.mark_registration_completed(db, mobile)
     return invitation, user

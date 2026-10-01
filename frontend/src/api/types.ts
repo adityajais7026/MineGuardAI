@@ -71,7 +71,8 @@ export interface RegisterCompleteRequest {
 /** Successful registration always returns the same JWT shape as login. */
 export type RegisterCompleteResponse = LoginResponse
 
-// ---- User invitations ("Invite User" link flow; no SMS/MSG91 involved) ----
+// ---- User invitations ("Invite User" link flow; mobile is OTP-verified via the
+// existing MSG91 register-purpose flow at accept time; admin collects no mobile) ----
 
 export type InvitableRole = Role
 export type InvitationStatus = 'Pending' | 'Accepted' | 'Expired'

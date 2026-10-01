@@ -1,6 +1,7 @@
 /** Typed endpoint wrappers — one place where API paths live. */
 import { api } from './client'
 import type {
+
   Alert,
   CameraEvent,
   ComplianceRule,
@@ -163,10 +164,21 @@ export const usersApi = {
 export const invitationsApi = {
   /** Public: validate an accept-link token (no auth). */
   get: (token: string) => api.get<InvitationPublic>(`/api/invitations/accept/${encodeURIComponent(token)}`),
-  /** Public: consume the invitation; sets the invited person's own password. */
-  accept: (token: string, password: string, confirmPassword: string) =>
+  /** Public step 1: send the MSG91 SMS OTP to the invited person's mobile. */
+  mobileStart: (token: string, mobile: string) =>
+    api.post<OtpSendResponse>(`/api/invitations/accept/${encodeURIComponent(token)}/mobile/start`, { mobile }),
+  /** Public step 2: verify the OTP -> single-use pending-registration token. */
+  mobileVerify: (token: string, mobile: string, otp: string) =>
+    api.post<RegisterVerifyResponse>(`/api/invitations/accept/${encodeURIComponent(token)}/mobile/verify`, {
+      mobile,
+      otp,
+    }),
+  /** Public step 3: consume the invitation; reg token proves the mobile was verified. */
+  accept: (token: string, body: { mobile: string; regToken: string; password: string; confirmPassword: string }) =>
     api.post<LoginResponse>(`/api/invitations/accept/${encodeURIComponent(token)}`, {
-      password,
-      confirm_password: confirmPassword,
+      mobile: body.mobile,
+      token: body.regToken,
+      password: body.password,
+      confirm_password: body.confirmPassword,
     }),
 }

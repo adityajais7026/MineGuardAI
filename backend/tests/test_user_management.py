@@ -1,28 +1,39 @@
 """Invitation-based user management (link invitations + permanent deletion).
 
 Covers the "Invite User" flow (admin mints Full Name/Email/Role only, no
-password, no mobile), the public accept flow (own password, role fixed
-server-side, single-use, expiry, replay), the Administrator-only permanent
-delete (guards: non-admin, self, last-admin; email/mobile freed; pending
-invitations revoked; demo rows untouched) and the impact scan.
+password, no mobile), the OTP-gated public accept flow (mobile verified via
+the EXISTING MSG91 register-purpose OTP flow before the password step, own
+password, role fixed server-side, single-use, expiry, replay), the
+Administrator-only permanent delete (guards: non-admin, self, last-admin;
+email/mobile freed; pending invitations revoked; demo rows untouched) and the
+impact scan.
 """
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.core.config import settings
 from app.core.security import create_access_token, hash_password, verify_password
 from app.database import models
+from app.services import msg91
 
 BASE = "/api/auth"
 UM = "/api/users"
 INV = "/api/invitations"
 
+# The fixed code accepted when SMS delivery is disabled (tests/dev only).
+TEST_CODE = msg91.TEST_OTP_CODE
 
 _email_seq = iter(range(300, 399))
+_mobile_seq = iter(range(10000, 19999))
 
 
 def _unique_email(prefix: str = "invited") -> str:
     return f"{prefix}-{next(_email_seq)}@test.ai"
+
+
+def _unique_mobile() -> str:
+    return f"9188{next(_mobile_seq):08d}"
 
 
 def _invite(client, **overrides):
@@ -35,10 +46,39 @@ def _invite(client, **overrides):
     return payload, client.post(f"{UM}/invite", json=payload)
 
 
-def _accept(client, token: str, password: str = "Sup3rSecret!x", **overrides):
-    body = {"password": password, "confirm_password": overrides.pop("confirm_password", password)}
+def _accept(client, token: str, password: str = "Sup3rSecret!x", *, mobile: str | None = None, **overrides):
+    """Drive the full OTP-gated accept flow with the fixed test code.
+
+    Steps: mobile/start -> mobile/verify (TEST_CODE) -> accept with the
+    pending-registration token. Pass `mobile` to control the number (defaults
+    to a fresh unique one, since a mobile can only verify once per challenge).
+    OTP-start/verify failures surface unchanged (404/409/429/401).
+    """
+    mobile = mobile or _unique_mobile()
+    r = client.post(f"{INV}/accept/{token}/mobile/start", json={"mobile": mobile})
+    if r.status_code != 200:
+        return r
+    verify = client.post(
+        f"{INV}/accept/{token}/mobile/verify",
+        json={"mobile": mobile, "otp": overrides.pop("otp", TEST_CODE)},
+    )
+    if verify.status_code != 200:
+        return verify
+    body = {
+        "mobile": mobile,
+        "token": verify.json()["token"],
+        "password": password,
+        "confirm_password": overrides.pop("confirm_password", password),
+    }
     body.update(overrides)
     return client.post(f"{INV}/accept/{token}", json=body)
+
+
+@pytest.fixture(autouse=True)
+def _disable_sms_delivery(monkeypatch):
+    """Acceptance verifies mobile via the real MSG91 OTP flow; in tests the
+    delivery is disabled so the fixed dev/test code works (no SMS spend)."""
+    monkeypatch.setattr(settings, "OTP_SMS_DISABLED", True)
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +152,7 @@ def test_invitation_token_is_never_stored_in_plaintext(client, db_session):
 
 
 # ------------------------------------------------------------------ #
-# 2. Accept flow
+# 2. Accept flow (mobile verified via the existing MSG91 OTP flow)
 # ------------------------------------------------------------------ #
 def test_valid_invitation_opens_and_shows_details(client):
     payload, r = _invite(client)
@@ -153,7 +193,8 @@ def test_expired_invitation_is_rejected(client, db_session):
 def test_accept_creates_account_with_own_password_and_correct_role(client, db_session):
     payload, r = _invite(client, role="environmental_officer", full_name="Gov Officer")
     token = r.json()["token"]
-    resp = _accept(client, token, password="MyOwnPassword1!")
+    mob = _unique_mobile()
+    resp = _accept(client, token, password="MyOwnPassword1!", mobile=mob)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["user"]["role"] == "environmental_officer"
@@ -164,8 +205,91 @@ def test_accept_creates_account_with_own_password_and_correct_role(client, db_se
     assert user is not None
     assert user.role == "environmental_officer"
     assert user.is_active is True
-    assert user.mobile is None  # link invitations never touch MSG91
+    # The account carries the MSG91-verified mobile (required for invited users).
+    assert user.mobile == msg91.normalize_mobile(mob)
     assert verify_password("MyOwnPassword1!", user.hashed_password)
+
+
+def test_accept_without_verified_mobile_is_rejected(client):
+    """No mobile/start or mobile/verify -> no pending-registration token ->
+    the account can never be created without a verified mobile."""
+    _, r = _invite(client)
+    token = r.json()["token"]
+    missing = client.post(
+        f"{INV}/accept/{token}",
+        json={"password": "Password1!", "confirm_password": "Password1!", "mobile": _unique_mobile()},
+    )
+    assert missing.status_code == 422  # reg token required
+    bogus = client.post(
+        f"{INV}/accept/{token}",
+        json={"password": "Password1!", "confirm_password": "Password1!",
+              "mobile": _unique_mobile(), "token": "x" * 40},
+    )
+    assert bogus.status_code == 401  # reg token invalid -> start again
+    # The invitation was not consumed by either failed attempt.
+    assert client.get(f"{INV}/accept/{token}").status_code == 200
+
+
+def test_accept_wrong_otp_is_rejected(client, db_session):
+    """A wrong code never reaches the password step; a correct retry succeeds."""
+    payload, r = _invite(client)
+    token = r.json()["token"]
+    mob = _unique_mobile()
+    assert client.post(f"{INV}/accept/{token}/mobile/start", json={"mobile": mob}).status_code == 200
+    wrong = client.post(f"{INV}/accept/{token}/mobile/verify", json={"mobile": mob, "otp": "000000"})
+    assert wrong.status_code == 401
+    assert db_session.query(models.User).filter_by(email=payload["email"]).first() is None
+    # Invitation still usable: full flow with a fresh mobile + correct code.
+    assert _accept(client, token).status_code == 200
+
+
+def test_accept_rejects_mobile_different_from_verified_one(client):
+    """The reg token pins the verified mobile: it cannot be swapped at accept."""
+    _, r = _invite(client)
+    token = r.json()["token"]
+    mob = _unique_mobile()
+    assert client.post(f"{INV}/accept/{token}/mobile/start", json={"mobile": mob}).status_code == 200
+    verify = client.post(f"{INV}/accept/{token}/mobile/verify", json={"mobile": mob, "otp": TEST_CODE})
+    assert verify.status_code == 200
+    swapped = client.post(
+        f"{INV}/accept/{token}",
+        json={"mobile": _unique_mobile(), "token": verify.json()["token"],
+              "password": "Sup3rSecret!x", "confirm_password": "Sup3rSecret!x"},
+    )
+    assert swapped.status_code == 401
+
+
+def test_accept_rejects_already_registered_mobile(client, db_session):
+    """The register-purpose mobile-uniqueness check is inherited: starting the
+    OTP for a mobile that already belongs to an account is a 409."""
+    taken = _unique_mobile()
+    owner = models.User(id="u-mob-owner", email=_unique_email("mobowner"), full_name="Owner",
+                        role="safety_officer", mobile=taken, hashed_password="x")
+    db_session.add(owner)
+    db_session.commit()
+    try:
+        payload, r = _invite(client)
+        token = r.json()["token"]
+        resp = _accept(client, token, mobile=taken)
+        assert resp.status_code == 409
+        inv = db_session.query(models.RoleInvitation).filter_by(bound_email=payload["email"]).first()
+        assert inv.is_used is False  # nothing consumed on the failed start
+    finally:
+        db_session.rollback()
+        db_session.delete(owner)
+        db_session.commit()
+
+
+def test_accept_otp_inherits_resend_cooldown(client):
+    """Reusing the existing register-purpose policy: an immediate re-send hits
+    the same cooldown the public registration flow enforces."""
+    _, r = _invite(client)
+    token = r.json()["token"]
+    mob = _unique_mobile()
+    assert client.post(f"{INV}/accept/{token}/mobile/start", json={"mobile": mob}).status_code == 200
+    again = client.post(f"{INV}/accept/{token}/mobile/start", json={"mobile": mob})
+    assert again.status_code == 429
+    assert "Retry-After" in again.headers
 
 
 def test_accept_login_works_with_new_password(client):
