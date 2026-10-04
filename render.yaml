@@ -36,28 +36,28 @@ services:
         sync: false
       - key: WEIGHTS_URL         # private link to vyra_yolov8m_ppe.pt
         sync: false
-      # --- production detector: Vyra (model unchanged; person_anchor adds the
-      #     yolo11n person-anchor + ByteTrack strategy verified locally) ---
+      # --- production detector: Vyra (model + default strategy unchanged).
+      #     NOTE: AI_DETECTOR_STRATEGY=person_anchor (Vyra + yolo11n anchor +
+      #     ByteTrack, verified locally) OOM-kills the 512MB free instance —
+      #     both models cannot stay resident. To enable it, upgrade the
+      #     service to Standard (2GB) AND set the strategy back to
+      #     person_anchor plus PERSON_ANCHOR_MODEL_PATH=/data/weights/yolo11n.pt
+      #     and ANCHOR_WEIGHTS_URL (ultralytics v8.3.0 yolo11n.pt); the
+      #     entrypoint already fetches anchor weights when those are set.
       - key: AI_DETECTOR
         value: yolo
       - key: AI_DETECTOR_STRATEGY
-        value: person_anchor
+        value: default
       - key: YOLO_MODEL_PATH
         value: /data/weights/vyra_yolov8m_ppe.pt
-      # person-anchor weights fetched at container start by docker/entrypoint.sh
-      - key: PERSON_ANCHOR_MODEL_PATH
-        value: /data/weights/yolo11n.pt
-      - key: ANCHOR_WEIGHTS_URL
-        value: https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
       # --- exact thresholds from the verified local live demo (do not retune) ---
       - key: YOLO_CAPTURE_CONFIDENCE
         value: "0.10"
       - key: PPE_VIOLATION_CONFIDENCE
         value: "0.35"
-      # --- free-tier memory squeeze: Vyra + anchor models must co-exist in 512MB.
-      #     Single-threaded BLAS/OMP cuts torch/numpy thread-pool RAM sharply;
-      #     glibc arena cap limits heap fragmentation. Inference gets slower
-      #     (expected ~8-15s/frame) but stays inside the memory ceiling.
+      # --- 512MB hygiene: thread-pool caps + glibc arena limit keep the
+      #     single Vyra model inside the memory ceiling (uploads previously
+      #     showed OOM-style 502s without them). Costs some inference latency.
       - key: OMP_NUM_THREADS
         value: "1"
       - key: MKL_NUM_THREADS
