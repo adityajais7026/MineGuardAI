@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 UserRole = Literal["admin", "mine_manager", "safety_officer", "environmental_officer"]
 
@@ -34,6 +34,23 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=72)
     mobile: str | None = Field(default=None, max_length=15)
+    # Admin-managed mine scope for live detection (safety/environmental
+    # officers; mine_manager scope comes from mines.manager_id). Duplicates
+    # removed; order preserved (stable for the UI).
+    permitted_mine_ids: list[str] | None = None
+
+    @field_validator("permitted_mine_ids")
+    @classmethod
+    def _dedupe_mine_ids(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for mid in v:
+            if mid not in seen:
+                seen.add(mid)
+                out.append(mid)
+        return out
 
 
 class UserResponse(UserBase):
@@ -42,4 +59,7 @@ class UserResponse(UserBase):
     id: str = Field(default_factory=_uuid)
     created_at: datetime
     updated_at: datetime
+    # Mines this user may run live detection in (officers only; see
+    # services/mine_access.py). Read-only surface for the admin UI.
+    permitted_mine_ids: list[str] = []
     # hashed_password is intentionally never exposed.

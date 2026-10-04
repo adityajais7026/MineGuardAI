@@ -4,6 +4,10 @@
 # 1. If WEIGHTS_URL is set and the configured YOLO weights file is missing,
 #    download it once into the persistent disk (survives redeploys/restarts).
 #    Weights are NEVER baked into the image and NEVER live in git.
+# 1b. Same for the person-anchor (ByteTrack) model: ANCHOR_WEIGHTS_URL ->
+#     PERSON_ANCHOR_MODEL_PATH. Without it, the person_anchor strategy raises
+#     FileNotFoundError on startup, so this fetch is mandatory when that
+#     strategy is enabled (render.yaml sets it for the public deployment).
 # 2. Exec uvicorn on 0.0.0.0:$PORT — Render injects PORT per service; the
 #    default 8000 keeps local docker runs working unchanged.
 set -euo pipefail
@@ -19,6 +23,18 @@ if [ -n "$WEIGHTS_URL" ] && [ -n "$WEIGHTS_PATH" ] && [ ! -f "$WEIGHTS_PATH" ]; 
   ls -la "$WEIGHTS_PATH"
 else
   echo "[entrypoint] weights: using configured file at ${WEIGHTS_PATH:-<unset>}"
+fi
+
+ANCHOR_WEIGHTS_URL="${ANCHOR_WEIGHTS_URL:-}"
+ANCHOR_PATH="${PERSON_ANCHOR_MODEL_PATH:-}"
+
+if [ -n "$ANCHOR_WEIGHTS_URL" ] && [ -n "$ANCHOR_PATH" ] && [ ! -f "$ANCHOR_PATH" ]; then
+  echo "[entrypoint] fetching person-anchor weights -> $ANCHOR_PATH"
+  mkdir -p "$(dirname "$ANCHOR_PATH")"
+  curl -fsSL --retry 3 -o "$ANCHOR_PATH" "$ANCHOR_WEIGHTS_URL"
+  ls -la "$ANCHOR_PATH"
+else
+  echo "[entrypoint] anchor: using configured file at ${ANCHOR_PATH:-<unset>}"
 fi
 
 echo "[entrypoint] starting uvicorn on 0.0.0.0:${PORT}"

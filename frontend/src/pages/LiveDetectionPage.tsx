@@ -132,10 +132,21 @@ function personName(trackId: number | null | undefined): string {
 
 export default function LiveDetectionPage() {
   const { user } = useAuth()
-  // Same RBAC mirror as the upload detection button (backend 403 is the real gate).
-  const canRunDetection = user?.role === 'admin' || user?.role === 'safety_officer'
+  // Every role except none may open the page — the BACKEND enforces per-mine
+  // scope (admin: all, mine_manager: managed mines, officers: permitted mines).
+  // The backend 403 remains the real gate; this is UI convenience only.
+  const canRunDetection = !!user
 
   const mines = useApiResource(() => minesApi.list({ limit: 200 }).then((r) => r.items), [])
+  // Backend-enforced scope, mirrored for the dropdown: admin sees every mine,
+  // mine_manager only mines they manage, officers only their permitted mines
+  // (empty = none). A hand-crafted request is still rejected server-side.
+  const scopedMines = (mines.data ?? []).filter((m: Mine) => {
+    if (!user) return false
+    if (user.role === 'admin') return true
+    if (user.role === 'mine_manager') return m.manager_id === user.id
+    return (user.permitted_mine_ids ?? []).includes(m.id)
+  })
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -323,7 +334,7 @@ export default function LiveDetectionPage() {
       <div className="page">
         <div className="card error-card">
           <h2>403 — Forbidden</h2>
-          <p>Live detection is restricted to admins and safety officers (same policy as upload detection).</p>
+          <p>Live detection requires an account. Please sign in again.</p>
         </div>
       </div>
     )
@@ -384,7 +395,7 @@ export default function LiveDetectionPage() {
           <label>Mine
             <select value={mineId} onChange={(e) => { setMineId(e.target.value); setZoneId('') }} disabled={phase === 'live' || phase === 'paused'}>
               <option value="">— select mine —</option>
-              {(mines.data ?? []).map((m: Mine) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {scopedMines.map((m: Mine) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </label>
 

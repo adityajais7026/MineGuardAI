@@ -230,6 +230,11 @@ def record_yolo_events(
         )
         is None
     ):
+        # Minimal alert routing: a genuine PPE violation belongs to the mine's
+        # registered manager (mines.manager_id) so the responsible person sees
+        # it on the Alerts page. NULL when the mine has no manager assigned —
+        # the alert still exists, it is just unassigned.
+        manager_id = db.scalar(select(Mine.manager_id).where(Mine.id == mine_id))
         alert = Alert(
             mine_id=mine_id,
             alert_type="safety",
@@ -241,6 +246,7 @@ def record_yolo_events(
             source="yolo",
             status="new",
             source_event_id=event.id,
+            assigned_to_id=manager_id,
         )
         db.add(alert)
 

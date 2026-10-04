@@ -17,6 +17,9 @@ export interface User {
   role: Role
   /** Verified mobile (digits incl. country code); present after OTP registration. */
   mobile?: string | null
+  /** Mines this user may run live detection in (officers; admin-managed).
+   *  mine_manager scope comes from mines.manager_id instead; admin unrestricted. */
+  permitted_mine_ids?: string[]
   is_active: boolean
   created_at: string
   updated_at: string

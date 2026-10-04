@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { usersApi } from '../api/endpoints'
+import { minesApi, usersApi } from '../api/endpoints'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
-import type { InvitationCreated, InvitationSummary, User, UserDeleteImpact } from '../api/types'
+import type { InvitationCreated, InvitationSummary, Mine, User, UserDeleteImpact } from '../api/types'
 import {
   Badge, EmptyState, ErrorState, Loading, Modal, PageHeader,
 } from '../components/ui'
@@ -58,6 +58,13 @@ export default function UsersPage() {
   const { data: invitations, refetch: refetchInvitations } = useApiResource(
     () => usersApi.invitations({ limit: 50 }), [],
   )
+  const { data: allMines } = useApiResource(() => minesApi.list({ limit: 200 }).then((r) => r.items), [])
+
+  // --- Live-detection mine scope (admin-managed, backend-enforced) --------
+  const [scopeTarget, setScopeTarget] = useState<User | null>(null)
+  const [scopeSelected, setScopeSelected] = useState<string[]>([])
+  const [scopeBusy, setScopeBusy] = useState(false)
+  const [scopeError, setScopeError] = useState<string | null>(null)
 
   const [showInvite, setShowInvite] = useState(false)
   const [inviteForm, setInviteForm] = useState(EMPTY_INVITE_FORM)
@@ -176,6 +183,31 @@ export default function UsersPage() {
     }
   }
 
+  function openScopeEditor(u: User) {
+    setScopeError(null)
+    setScopeSelected(u.permitted_mine_ids ?? [])
+    setScopeTarget(u)
+  }
+
+  async function handleSaveScope() {
+    if (!scopeTarget) return
+    setScopeBusy(true)
+    setScopeError(null)
+    try {
+      await usersApi.update(scopeTarget.id, { permitted_mine_ids: scopeSelected })
+      setScopeTarget(null)
+      refetch()
+    } catch (err) {
+      setScopeError(err instanceof ApiError ? err.message : 'Could not update mine access')
+    } finally {
+      setScopeBusy(false)
+    }
+  }
+
+  function toggleScopeMine(id: string) {
+    setScopeSelected((cur) => (cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]))
+  }
+
   async function handleDeletePermanently() {
     if (!deleteTarget) return
     setBusy(true)
@@ -212,7 +244,7 @@ export default function UsersPage() {
       {(data?.items.length ?? 0) === 0 ? <EmptyState message="No users found." /> : (
         <div className="card">
           <table className="table">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Live mines</th><th /></tr></thead>
             <tbody>
               {data!.items.map((u) => (
                 <tr key={u.id}>
@@ -220,7 +252,18 @@ export default function UsersPage() {
                   <td><code>{u.email}</code></td>
                   <td><Badge text={ROLE_LABEL[u.role] ?? u.role.replace(/_/g, ' ')} tone="info" /></td>
                   <td><Badge text={u.is_active ? 'active' : 'deactivated'} tone={u.is_active ? 'ok' : 'danger'} /></td>
+                  <td>
+                    {u.role === 'admin' ? <span className="muted">all mines</span>
+                      : u.role === 'mine_manager' ? <span className="muted">managed mines</span>
+                      : <Badge text={String(u.permitted_mine_ids?.length ?? 0)} tone={(u.permitted_mine_ids?.length ?? 0) > 0 ? 'ok' : 'muted'} />}
+                  </td>
                   <td className="table-actions">
+                    {u.role !== 'admin' && (
+                      <button className="btn btn-sm" onClick={() => openScopeEditor(u)}
+                        title="Choose which mines this user can run live detection in">
+                        Assign mines
+                      </button>
+                    )}
                     <button className="btn btn-sm" onClick={() => toggleActive(u.id, u.is_active)}>
                       {u.is_active ? 'Deactivate' : 'Activate'}
                     </button>
@@ -352,6 +395,33 @@ export default function UsersPage() {
               </button>
             </form>
           )}
+        </Modal>
+      )}
+
+      {scopeTarget && (
+        <Modal title={`Live-detection mines — ${scopeTarget.full_name}`} onClose={() => setScopeTarget(null)}>
+          <p className="muted" style={{ marginTop: 0 }}>
+            {scopeTarget.role === 'mine_manager'
+              ? 'Mine Managers automatically get the mines where they are registered as manager (set on the Mines page). This list is used for Safety Officers and Government Officers.'
+              : 'This user can only run live detection in the mines selected here. No selection means no live-detection access.'}
+          </p>
+          {(allMines ?? []).length === 0 ? <p className="muted">No mines exist yet — create one on the Mines page.</p> : (
+            <div style={{ display: 'grid', gap: 6 }}>
+              {(allMines as Mine[]).map((m) => (
+                <label key={m.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input type="checkbox" checked={scopeSelected.includes(m.id)} onChange={() => toggleScopeMine(m.id)} />
+                  <span>{m.name} <span className="muted">({m.code})</span></span>
+                </label>
+              ))}
+            </div>
+          )}
+          {scopeError && <div className="form-error" role="alert">{scopeError}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={() => setScopeTarget(null)} disabled={scopeBusy}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSaveScope} disabled={scopeBusy}>
+              {scopeBusy ? 'Saving…' : 'Save mine access'}
+            </button>
+          </div>
         </Modal>
       )}
 

@@ -40,11 +40,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.roles import write_access
 from app.core.security import get_current_user
-from app.database.models import CameraEvent, User
+from app.database.models import CameraEvent, Mine, User
 from app.database.session import get_db
 from app.services.camera_pipeline import record_yolo_events
+from app.services.mine_access import ensure_mine_access
 from app.services.ppe_policy import associate_with_persons, resolve_thresholds
 from app.services.safety_rules import PPE_HANDLED_CLASSES, evaluate_safety_rules
 from app.services.storage import ALLOWED_IMAGE_TYPES, build_media_path, get_storage, sniff_mime
@@ -78,7 +78,12 @@ router = APIRouter(
 )
 
 DbSession = Annotated[Session, Depends(get_db)]
-LiveUser = Annotated[User, Depends(write_access("ai_simulation"))]
+# Live detection is role-gated per MINE (see app.services.mine_access), not by
+# the coarse ai_simulation write map: admin (all mines), mine_manager (their
+# managed mines), safety_officer / environmental_officer (their explicitly
+# permitted mines). Authorization happens inside the endpoint BEFORE any
+# detector or media validation so unauthorized users learn nothing.
+LiveUser = Annotated[User, Depends(get_current_user)]
 
 
 class LiveFrameRequest(BaseModel):
@@ -522,6 +527,14 @@ def detect_live_frame(
     user: LiveUser,
 ) -> dict[str, Any]:
     """Run the real PPE pipeline on ONE live webcam frame. Separate from uploads."""
+    # Mine-scoped RBAC FIRST: existence (400) then per-role scope (403) before
+    # the detector probe, media decode or any inference work. A mine_manager or
+    # officer naming another mine is rejected here no matter what the request
+    # contains — mine scoping is enforced on the backend, never trusted to the UI.
+    mine = db.get(Mine, body.mine_id)
+    if mine is None:
+        raise HTTPException(status_code=400, detail=f"Unknown mine_id '{body.mine_id}'")
+    ensure_mine_access(user, mine)
     _require_yolo()
     zone = _validate_mine_zone(db, body.mine_id, body.zone_id)
     data = _decode_frame(body.image_base64)

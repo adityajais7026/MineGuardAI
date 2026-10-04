@@ -29,6 +29,11 @@
 -- plaintext `code` column (creator-visible until used/expired/deleted), the
 -- `deleted_at` soft-delete column and a code lookup index. Apply with:
 --   database/migrations/2026-10-02_invitation_codes.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (live-detection mine-scope phase): users gained a
+-- `permitted_mine_ids` JSON column (backend mine-scoping for live webcam
+-- detection). Apply with:
+--   database/migrations/2026-10-03_live_detection_mine_scope.sql  (idempotent)
 -- ============================================================================
 
 BEGIN;
@@ -37,16 +42,19 @@ BEGIN;
 -- users  (local-auth credential store; supabase_user_id links to Supabase Auth)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-    id                VARCHAR(36)  PRIMARY KEY,
-    email             VARCHAR(255) NOT NULL,
-    full_name         VARCHAR(255) NOT NULL,
-    role              VARCHAR(40)  NOT NULL DEFAULT 'safety_officer',
-    hashed_password   VARCHAR(255),
-    supabase_user_id  VARCHAR(64),
-    mobile            VARCHAR(15),
-    is_active         BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    id                  VARCHAR(36)  PRIMARY KEY,
+    email               VARCHAR(255) NOT NULL,
+    full_name           VARCHAR(255) NOT NULL,
+    role                VARCHAR(40)  NOT NULL DEFAULT 'safety_officer',
+    hashed_password     VARCHAR(255),
+    supabase_user_id    VARCHAR(64),
+    mobile              VARCHAR(15),
+    -- Mines this user may run live detection in (JSON array of mine ids;
+    -- officers only — mine_manager scope comes from mines.manager_id).
+    permitted_mine_ids  JSON         NOT NULL DEFAULT '[]'::jsonb,
+    is_active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_users_role
         CHECK (role IN ('admin', 'mine_manager', 'safety_officer', 'environmental_officer'))
 );

@@ -86,6 +86,10 @@ def update_user(db: DbSession, user_id: str, payload: UserUpdate):
     if "mobile" in data:
         mobile = data.pop("mobile")
         user.mobile = normalize_mobile(mobile) if mobile else None
+    # Explicit null means "no change" (the column is NOT NULL); [] clears the
+    # permitted-mine scope. Omitted means no change (exclude_unset above).
+    if data.get("permitted_mine_ids") is None:
+        data.pop("permitted_mine_ids", None)
     for field, value in data.items():
         setattr(user, field, value)
     try:

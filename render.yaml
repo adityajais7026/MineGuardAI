@@ -36,13 +36,24 @@ services:
         sync: false
       - key: WEIGHTS_URL         # private link to vyra_yolov8m_ppe.pt
         sync: false
-      # --- production detector: Vyra (unchanged) ---
+      # --- production detector: Vyra (model unchanged; person_anchor adds the
+      #     yolo11n person-anchor + ByteTrack strategy verified locally) ---
       - key: AI_DETECTOR
         value: yolo
       - key: AI_DETECTOR_STRATEGY
-        value: default
+        value: person_anchor
       - key: YOLO_MODEL_PATH
         value: /data/weights/vyra_yolov8m_ppe.pt
+      # person-anchor weights fetched at container start by docker/entrypoint.sh
+      - key: PERSON_ANCHOR_MODEL_PATH
+        value: /data/weights/yolo11n.pt
+      - key: ANCHOR_WEIGHTS_URL
+        value: https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+      # --- exact thresholds from the verified local live demo (do not retune) ---
+      - key: YOLO_CAPTURE_CONFIDENCE
+        value: "0.10"
+      - key: PPE_VIOLATION_CONFIDENCE
+        value: "0.35"
       # --- web wiring: exact public frontend origin (see RENDER_DEPLOY.md 3a) ---
       - key: CORS_ORIGINS
         value: https://mineguardai-web.onrender.com,http://localhost:5173

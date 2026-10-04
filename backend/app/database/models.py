@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -51,6 +53,13 @@ class User(Base):
     # Verified mobile number (E.164 without '+', e.g. 919999999999).
     # Required for MSG91 SMS OTP login; nullable so pre-existing rows stay valid.
     mobile: Mapped[str | None] = mapped_column(String(15), unique=True, nullable=True, index=True)
+    # Mines this user is permitted to operate in — backend mine-scoping for
+    # live webcam detection (safety_officer / environmental_officer are
+    # scoped by this list; mine_manager by mines.manager_id instead; admin is
+    # unrestricted). JSON array of mine ids; empty list = no permitted mines.
+    permitted_mine_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
