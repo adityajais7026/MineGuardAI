@@ -54,6 +54,18 @@ services:
         value: "0.10"
       - key: PPE_VIOLATION_CONFIDENCE
         value: "0.35"
+      # --- free-tier memory squeeze: Vyra + anchor models must co-exist in 512MB.
+      #     Single-threaded BLAS/OMP cuts torch/numpy thread-pool RAM sharply;
+      #     glibc arena cap limits heap fragmentation. Inference gets slower
+      #     (expected ~8-15s/frame) but stays inside the memory ceiling.
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       # --- web wiring: exact public frontend origin (see RENDER_DEPLOY.md 3a) ---
       - key: CORS_ORIGINS
         value: https://mineguardai-web.onrender.com,http://localhost:5173
