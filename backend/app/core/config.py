@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # (e.g. "no-hardhat").
     PPE_VIOLATION_CONFIDENCE: float | None = None
     PPE_THRESHOLDS_JSON: str | None = None
+    # --- EXPERIMENTAL YOLO-World detector (OPT-IN; never the default) -------
+    # AI_DETECTOR="yolo_world" selects the open-vocabulary YOLO-World model
+    # (custom_yolov8s_mining.pt, six text classes) for image/video/live
+    # inference instead of the production Vyra model. Vyra remains production:
+    # "yolo" keeps selecting it with byte-identical behaviour.
+    AI_DETECTOR_YOLO_WORLD_MODEL_PATH: str = "ai/yolo/models/custom_yolov8s_mining.pt"
+
     # --- Live multi-person anchor strategy (OPT-IN) -------------------------
     # "default"      -> exactly the pre-anchor behaviour (Vyra only, global
     #                   event cooldown, synchronous evidence upload).

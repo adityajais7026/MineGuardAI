@@ -114,7 +114,7 @@ Key variables:
 | `AUTH_PROVIDER` | `local` (JWT) or `supabase` (adapter point) | `local` |
 | `JWT_SECRET_KEY` | **Change in production.** Generate: `python -c "import secrets; print(secrets.token_urlsafe(48))"` | insecure default |
 | `CORS_ORIGINS` | Comma-separated allowed origins | localhost:5173,3000 |
-| `AI_DETECTOR` | `simulated` or `yolo` | `simulated` |
+| `AI_DETECTOR` | `simulated`, `yolo` (production Vyra) or `yolo_world` (EXPERIMENTAL, see ai/YOLO_WORLD.md) | `simulated` |
 | `YOLO_MODEL_PATH` | Weights file for YOLO mode | `ai/yolo/models/best.pt` |
 | `EXTERNAL_INGESTION_PROVIDER` | `simulated` until a real endpoint exists | `simulated` |
 

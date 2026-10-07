@@ -104,18 +104,25 @@ class LiveFrameRequest(BaseModel):
 
 
 def _require_yolo() -> None:
-    """Same detector guard as the upload endpoints (503, never simulated)."""
-    if settings.AI_DETECTOR != "yolo":
+    """Same detector guard as the upload endpoints (503, never simulated).
+
+    AI_DETECTOR="yolo_world" opts into the EXPERIMENTAL open-vocabulary
+    backend for live frames; "yolo" keeps the production Vyra path unchanged.
+    """
+    from app.services.detectors import resolve_media_detector
+    from app.services.detectors.yolo_world import YoloWorldNotConfiguredError
+
+    if resolve_media_detector() is None:
         raise HTTPException(
             status_code=503,
             detail=(
-                "YOLO detection is disabled (AI_DETECTOR != 'yolo'). Set AI_DETECTOR=yolo "
-                "with a valid YOLO_MODEL_PATH to use live detection."
+                "YOLO detection is disabled (AI_DETECTOR not in ('yolo', 'yolo_world')). "
+                "Set AI_DETECTOR=yolo with a valid YOLO_MODEL_PATH to use live detection."
             ),
         )
     try:
-        get_yolo_service()._load_model()
-    except YoloNotConfiguredError as exc:
+        resolve_media_detector()._load_model()
+    except (YoloNotConfiguredError, YoloWorldNotConfiguredError) as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
 
@@ -550,8 +557,23 @@ def detect_live_frame(
             effective_conf=effective_conf,
         )
 
+    # OPT-IN experimental strategy: YOLO-World emits genuine person boxes, so
+    # the live frame gets REAL per-person PPE association + ByteTrack IDs via
+    # the SAME reusable live flow as the anchor strategy (no separate live
+    # implementation). The production Vyra default path below is untouched.
+    if settings.AI_DETECTOR == "yolo_world":
+        from app.services.live_adapter import live_frame_with_world
+
+        return live_frame_with_world(
+            body=body, db=db, user=user, zone=zone, data=data,
+            effective_conf=effective_conf,
+        )
+
     try:
-        detections, annotated_png = get_yolo_service().detect_image_bytes(
+        from app.services.detectors import resolve_media_detector
+
+        media_detector = resolve_media_detector()
+        detections, annotated_png = media_detector.detect_image_bytes(
             data, confidence=effective_conf
         )
     except ValueError as exc:

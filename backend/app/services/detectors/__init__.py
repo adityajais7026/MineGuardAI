@@ -12,6 +12,7 @@ Design rules:
   * Every detector states its class inventory honestly; no fabricated
     capabilities (a model without Boots reports no Boots).
 """
+from app.core.config import settings
 from app.services.yolo_detection import DetectionBox  # re-export: shared shape
 
 
@@ -45,6 +46,26 @@ def get_detector_by_name(name: str):
     raise ValueError(f"Unknown detector strategy: '{name}'")
 
 
+def resolve_media_detector():
+    """Detector that owns image/video/frame inference, chosen by AI_DETECTOR.
+
+    "simulated" or unknown  -> None (endpoints keep their 503 semantics)
+    "yolo"                  -> production YoloService (Vyra) — UNCHANGED default
+    "yolo_world"            -> EXPERIMENTAL open-vocabulary detector (opt-in)
+
+    Both backends share the YoloService public surface
+    (model_info / detect_image_bytes / detect_video_file), so callers need no
+    branching and no parallel pipeline exists.
+    """
+    if settings.AI_DETECTOR == "yolo":
+        from app.services.yolo_detection import get_yolo_service
+        return get_yolo_service()
+    if settings.AI_DETECTOR == "yolo_world":
+        from app.services.detectors.yolo_world import get_yolo_world_service
+        return get_yolo_world_service()
+    return None
+
+
 _anchor_singleton: object | None = None
 
 
@@ -56,4 +77,4 @@ def get_anchor_detector():
     return _anchor_singleton
 
 
-__all__ = ["DetectionBox", "get_detector_by_name"]
+__all__ = ["DetectionBox", "get_detector_by_name", "resolve_media_detector"]

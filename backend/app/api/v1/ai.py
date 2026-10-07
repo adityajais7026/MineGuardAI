@@ -31,11 +31,13 @@ def detector_info():
     'simulated' means no CV model runs; yolo.available means real inference works."""
     simulated = get_detector().health()
     from app.services.yolo_detection import get_yolo_service
+    from app.services.detectors.yolo_world import get_yolo_world_service
 
     return {
         "configured": settings.AI_DETECTOR,
         "simulated": simulated,
         "yolo": get_yolo_service().model_info(),
+        "yolo_world": get_yolo_world_service().model_info(),
     }
 
 

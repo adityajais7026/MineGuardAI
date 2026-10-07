@@ -40,10 +40,7 @@ from app.services.storage import (
     get_storage,
     sniff_mime,
 )
-from app.services.yolo_detection import (
-    YoloNotConfiguredError,
-    get_yolo_service,
-)
+from app.services.yolo_detection import YoloNotConfiguredError
 
 router = APIRouter(
     prefix="/ai/detect",
@@ -183,25 +180,29 @@ def _check_actual_type(data: bytes, allowed: dict) -> str:
 
 
 def _detect_for_media(kind: str):
-    """Resolve the configured detector; YOLO required for these endpoints.
+    """Resolve the configured detector; real inference required for these endpoints.
 
     Works with any Ultralytics-detect weights at YOLO_MODEL_PATH (generic
     COCO or fine-tuned PPE); classes drive the downstream rules honestly.
+    AI_DETECTOR="yolo_world" opt-in: the EXPERIMENTAL YOLO-World backend is
+    used for image/video through the same abstraction (Vyra stays default).
     """
-    from app.ai.detector import get_detector
+    from app.services.detectors import resolve_media_detector
+    from app.services.detectors.yolo_world import YoloWorldNotConfiguredError
 
-    if settings.AI_DETECTOR != "yolo":
+    media_detector = resolve_media_detector()
+    if media_detector is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "YOLO detection is disabled (AI_DETECTOR != 'yolo'). Set AI_DETECTOR=yolo "
-                "with a valid YOLO_MODEL_PATH. Simulated events remain available via "
-                "/api/ai/simulate-event."
+                "YOLO detection is disabled (AI_DETECTOR not in ('yolo', 'yolo_world')). "
+                "Set AI_DETECTOR=yolo with a valid YOLO_MODEL_PATH. Simulated events "
+                "remain available via /api/ai/simulate-event."
             ),
         )
     try:
-        get_yolo_service()._load_model()
-    except YoloNotConfiguredError as exc:
+        media_detector._load_model()
+    except (YoloNotConfiguredError, YoloWorldNotConfiguredError) as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
 
@@ -231,7 +232,11 @@ def detect_image(
     th = resolve_thresholds()
     effective_conf = confidence if confidence is not None else th.capture
     try:
-        detections, annotated_png = get_yolo_service().detect_image_bytes(data, confidence=effective_conf)
+        from app.services.detectors import resolve_media_detector
+
+        detections, annotated_png = resolve_media_detector().detect_image_bytes(
+            data, confidence=effective_conf
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -248,7 +253,13 @@ def detect_image(
     for f in findings:
         findings_by_event_type[f.event_type] = f
 
-    model_version = f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    # Honest labelling: the Vyra path keeps its exact historical string; the
+    # experimental YOLO-World backend names its own weights file.
+    model_version = (
+        f"yolo_world:{Path(settings.AI_DETECTOR_YOLO_WORLD_MODEL_PATH).name}"
+        if settings.AI_DETECTOR == "yolo_world"
+        else f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    )
     events_out: list[dict[str, Any]] = []
     alerts_out: list[dict[str, Any]] = []
 
@@ -433,7 +444,9 @@ def detect_video(
         th = resolve_thresholds()
         effective_conf = confidence if confidence is not None else th.capture
         started = time.time()
-        result = get_yolo_service().detect_video_file(
+        from app.services.detectors import resolve_media_detector
+
+        result = resolve_media_detector().detect_video_file(
             tmp_input, confidence=effective_conf, frame_stride=frame_stride,
         )
         processing_seconds = round(time.time() - started, 2)
@@ -460,7 +473,11 @@ def detect_video(
     )
 
 
-    model_version = f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    model_version = (
+        f"yolo_world:{Path(settings.AI_DETECTOR_YOLO_WORLD_MODEL_PATH).name}"
+        if settings.AI_DETECTOR == "yolo_world"
+        else f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    )
     camera_id = zone.camera_id if zone and zone.camera_id else f"CAM-{mine_id[:6].upper()}-VID"
     events_out: list[dict[str, Any]] = []
     alerts_out: list[dict[str, Any]] = []
