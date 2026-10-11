@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     AI_DETECTOR_STRATEGY: str = "default"
     # Anchor weights (COCO person detector) used only by the anchor strategy.
     PERSON_ANCHOR_MODEL_PATH: str = "tmp_diag/alt_models/yolo11n.pt"
+
+    # --- Governance platform (Smart Governance & Compliance upgrade) ---
+    # AI capability providers. "none" = feature not connected; the UI shows an
+    # explicit UNAVAILABLE/NOT CONNECTED state instead of fake output.
+    OCR_PROVIDER: str = "none"
+    VOICE_PROVIDER: str = "none"
+    TRANSLATION_PROVIDER: str = "none"
     # OPT-IN comparison switch: when set, the person_anchor strategy uses this
     # model for PPE instead of the production one (benchmarking only — e.g.
     # Hansung-PPE). Empty string = production Vyra (never changes by default).

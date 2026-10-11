@@ -10,6 +10,7 @@ from app.api.v1 import (
     dashboard,
     detect,
     environmental_readings,
+    governance,
     incidents,
     inspections,
     live_detect,
@@ -39,6 +40,23 @@ all_routers = [
     incidents.router,
     inspections.router,
     corrective_actions.router,
+    # Smart Governance & Compliance platform (additive)
+    governance.templates_router,
+    governance.gov_inspections_router,
+    governance.evidence_router,
+    governance.compliance_router,
+    governance.geofence_router,
+    governance.workers_router,
+    governance.shifts_router,
+    governance.contractors_router,
+    governance.emergency_router,
+    governance.telemetry_router,
+    governance.risk_router,
+    governance.reports_router,
+    governance.audit_router,
+    governance.notifications_router,
+    governance.sync_router,
+    governance.ai_router,
 ]
 
 __all__ = ["all_routers"]

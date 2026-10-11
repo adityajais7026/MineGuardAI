@@ -172,3 +172,258 @@ export const usersApi = {
 }
 
 
+
+// ===========================================================================
+// Smart Governance & Compliance platform (additive; existing endpoints above)
+// ===========================================================================
+
+export interface GovernanceTemplate {
+  id: string
+  name: string
+  description: string | null
+  inspection_type: string
+  mine_id: string | null
+  regulatory_reference: string | null
+  is_active: boolean
+  created_at: string
+  items: { id: string; position: number; label: string; category: string; result_options: string; severity_weight: number }[]
+}
+
+export interface ChecklistItem {
+  id: string
+  inspection_id: string
+  position: number
+  label: string
+  category: string
+  result: 'pass' | 'fail' | 'na' | 'unknown' | null
+  comment: string | null
+  ai_suggestion: string | null
+  ai_confidence: number | null
+  ai_model: string | null
+}
+
+export interface Geofence {
+  id: string
+  mine_id: string
+  name: string
+  boundary_type: 'radius' | 'polygon'
+  center_lat: number | null
+  center_lng: number | null
+  radius_m: number | null
+  polygon_json: number[][] | null
+  is_active: boolean
+}
+
+export interface GovernanceWorker {
+  id: string
+  mine_id: string
+  contractor_id: string | null
+  employee_code: string
+  full_name: string
+  role: string | null
+  phone: string | null
+  is_active: boolean
+}
+
+export interface Contractor {
+  id: string
+  name: string
+  contact_person: string | null
+  phone: string | null
+  email: string | null
+  is_active: boolean
+}
+
+export interface ContractorDocument {
+  id: string
+  contractor_id: string | null
+  worker_id: string | null
+  mine_id: string | null
+  doc_type: string
+  title: string
+  document_ref: string
+  issued_on: string | null
+  expires_on: string | null
+  verification_status: string
+}
+
+export interface Emergency {
+  id: string
+  mine_id: string
+  emergency_type: string
+  severity: string
+  status: string
+  title: string
+  description: string | null
+  location_text: string | null
+  created_at: string
+}
+
+export interface SensorDevice {
+  id: string
+  mine_id: string
+  device_code: string
+  parameter: string
+  unit: string
+  source: 'real' | 'demo'
+  location_text: string | null
+  warning_threshold: number | null
+  critical_threshold: number | null
+  is_active: boolean
+  last_seen_at: string | null
+}
+
+export interface TelemetryReading {
+  id: string
+  device_id: string
+  mine_id: string
+  value: number
+  unit: string
+  status: 'normal' | 'warning' | 'critical' | 'unknown'
+  recorded_at: string
+}
+
+export interface RiskScore {
+  mine_id: string
+  score: number
+  band: 'low' | 'medium' | 'high' | 'critical'
+  factors: { factor: string; points: number; detail: string }[]
+}
+
+export interface AuditEvent {
+  id: string
+  seq: number
+  actor_id: string | null
+  actor_role: string | null
+  action: string
+  entity_type: string
+  entity_id: string | null
+  mine_id: string | null
+  prev_hash: string | null
+  event_hash: string
+  created_at: string
+}
+
+export interface GovernanceNotification {
+  id: string
+  category: string
+  title: string
+  body: string | null
+  severity: string
+  read_at: string | null
+  created_at: string
+}
+
+export interface ComplianceSummary {
+  total_requirements: number
+  compliant: number
+  attention: number
+  violation: number
+  not_assessed: number
+  overdue_actions: number
+  upcoming_deadlines: number
+  score: number
+}
+
+export interface AiCapability {
+  status: string
+  model?: string
+  provider?: string
+  note?: string
+}
+
+export const governanceApi = {
+  // Templates
+  templates: () => api.get<GovernanceTemplate[]>('/api/governance/inspection-templates'),
+  createTemplate: (body: Record<string, unknown>) =>
+    api.post<GovernanceTemplate>('/api/governance/inspection-templates', body),
+
+  // Inspection workflow
+  startFromTemplate: (body: Record<string, unknown>) =>
+    api.post<{ inspection_id: string; checklist: ChecklistItem[] }>('/api/governance/inspections/from-template', body),
+  checklist: (inspectionId: string) =>
+    api.get<ChecklistItem[]>(`/api/governance/inspections/${inspectionId}/checklist`),
+  submitChecklist: (inspectionId: string, results: Record<string, { result?: string; comment?: string }>) =>
+    api.put<ChecklistItem[]>(`/api/governance/inspections/${inspectionId}/checklist`, { results }),
+  submitInspection: (inspectionId: string) =>
+    api.post<{ compliance_result: string }>(`/api/governance/inspections/${inspectionId}/submit`),
+
+  // Compliance
+  requirements: () => api.get<GovernanceTemplate[]>('/api/governance/compliance/requirements'),
+  summary: (mineId?: string, period?: string) =>
+    api.get<ComplianceSummary>('/api/governance/compliance/summary', { mine_id: mineId, period }),
+
+  // Geofencing
+  geofences: (mineId?: string) => api.get<Geofence[]>('/api/governance/geofences', { mine_id: mineId }),
+  createGeofence: (body: Record<string, unknown>) => api.post<Geofence>('/api/governance/geofences', body),
+  verifyLocation: (mineId: string, latitude?: number, longitude?: number) =>
+    api.post<{ status: string; message?: string }>('/api/governance/geofences/verify-location',
+      { mine_id: mineId, latitude, longitude }),
+
+  // Workers / shifts
+  workers: (mineId?: string) => api.get<GovernanceWorker[]>('/api/governance/workers', { mine_id: mineId }),
+  createWorker: (body: Record<string, unknown>) => api.post<GovernanceWorker>('/api/governance/workers', body),
+
+  // Contractors + documents
+  contractors: () => api.get<Contractor[]>('/api/governance/contractors'),
+  createContractor: (body: Record<string, unknown>) => api.post<Contractor>('/api/governance/contractors', body),
+  documents: (status?: string) => api.get<ContractorDocument[]>('/api/governance/contractors/documents', { status }),
+  createDocument: (body: Record<string, unknown>) =>
+    api.post<ContractorDocument>('/api/governance/contractors/documents', body),
+  verifyDocument: (id: string, verificationStatus: string) =>
+    api.post<ContractorDocument>(`/api/governance/contractors/documents/${id}/verify`,
+      { verification_status: verificationStatus }),
+
+  // Emergency
+  emergencies: (mineId?: string, status?: string) =>
+    api.get<Emergency[]>('/api/governance/emergencies', { mine_id: mineId, status }),
+  createEmergency: (body: Record<string, unknown>) => api.post<Emergency>('/api/governance/emergencies', body),
+  updateEmergency: (id: string, body: Record<string, unknown>) =>
+    api.patch<Emergency>(`/api/governance/emergencies/${id}`, body),
+
+  // Telemetry
+  devices: (mineId?: string) => api.get<SensorDevice[]>('/api/governance/telemetry/devices', { mine_id: mineId }),
+  createDevice: (body: Record<string, unknown>) => api.post<SensorDevice>('/api/governance/telemetry/devices', body),
+  readings: (params?: ListParams) => api.get<TelemetryReading[]>('/api/governance/telemetry/readings', params),
+  addReading: (deviceId: string, value: number) =>
+    api.post<TelemetryReading>('/api/governance/telemetry/readings', { device_id: deviceId, value }),
+
+  // Risk
+  riskAll: () => api.get<RiskScore[]>('/api/governance/risk'),
+  riskMine: (mineId: string) => api.get<RiskScore>(`/api/governance/risk/${mineId}`),
+
+  // Audit (admin)
+  audit: (params?: ListParams) => api.get<AuditEvent[]>('/api/governance/audit', params),
+  auditVerify: () => api.get<{ valid: boolean; entries: number; head_hash?: string }>('/api/governance/audit/verify'),
+
+  // Notifications
+  notifications: (unreadOnly?: boolean) =>
+    api.get<GovernanceNotification[]>('/api/governance/notifications', { unread_only: unreadOnly }),
+  markRead: (ids: string[]) => api.post<void>('/api/governance/notifications/read', { ids }),
+  escalateOverdue: () => api.post<GovernanceNotification[]>('/api/governance/notifications/escalate-overdue'),
+
+  // Sync (offline-first)
+  syncPush: (body: Record<string, unknown>) =>
+    api.post<{ client_guid: string; status: string; result_ref_id?: string; error?: string }>('/api/governance/sync', body),
+  syncQueue: (status?: string) => api.get<{ id: string; client_guid: string; status: string; error?: string }[]>(
+    '/api/governance/sync/queue', { status }),
+
+  // AI workbench
+  aiCapabilities: () => api.get<Record<string, AiCapability>>('/api/governance/ai/capabilities'),
+  ocr: (dataBase64: string, mimeType?: string) =>
+    api.post<{ status: string; text: string | null; message: string | null }>('/api/governance/ai/ocr',
+      { data_base64: dataBase64, mime_type: mimeType }),
+  voice: (dataBase64: string) =>
+    api.post<{ status: string; text: string | null; message: string | null }>('/api/governance/ai/voice',
+      { data_base64: dataBase64 }),
+  translate: (text: string, targetLanguage: string) =>
+    api.post<{ status: string; text: string | null; message: string | null }>('/api/governance/ai/translate',
+      { text, target_language: targetLanguage }),
+
+  // Reports (PDF)
+  reportUrl: {
+    inspection: (id: string) => `/api/governance/reports/inspection/${id}.pdf`,
+    compliance: (mineId: string) => `/api/governance/reports/compliance/${mineId}.pdf`,
+    safety: (mineId: string) => `/api/governance/reports/safety/${mineId}.pdf`,
+  },
+}

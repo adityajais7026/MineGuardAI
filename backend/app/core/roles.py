@@ -31,6 +31,14 @@ WRITE_ROLES: dict[str, set[str]] = {
     "camera_events": {"safety_officer"},
     "restricted_zones": {"safety_officer", "mine_manager"},
     "ai_simulation": {"safety_officer"},
+    # --- Governance platform areas (additive; existing areas untouched) ---
+    "inspection_templates": {"safety_officer", "mine_manager", "environmental_officer"},
+    "compliance_requirements": {"environmental_officer", "mine_manager"},
+    "geofences": {"safety_officer", "mine_manager"},
+    "workers": {"safety_officer", "mine_manager"},
+    "contractors": {"safety_officer", "mine_manager"},
+    "emergencies": {"safety_officer", "mine_manager", "environmental_officer"},
+    "telemetry": {"safety_officer", "environmental_officer"},
 }
 
 
