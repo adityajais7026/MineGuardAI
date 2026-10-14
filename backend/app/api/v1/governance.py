@@ -378,7 +378,13 @@ def get_review_status(inspection_id: str, db: DbSession, user: CurrentUser):
     if insp is None:
         raise HTTPException(status_code=404, detail="Inspection not found.")
     _ensure_mine_scope(user, insp.mine_id, db)
-    return insp
+    return ReviewTransitionOut(
+        inspection_id=insp.id,
+        review_status=insp.review_status,
+        reviewed_by_id=insp.reviewed_by_id,
+        reviewed_at=insp.reviewed_at,
+        review_notes=insp.review_notes,
+    )
 
 
 # ===========================================================================

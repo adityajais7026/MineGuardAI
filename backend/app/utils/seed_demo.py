@@ -39,22 +39,33 @@ def _seed(db) -> None:
         User(id="u-mgr-0001", email="manager@mineguard.ai", full_name="Rohit Malhotra",
              role="mine_manager", hashed_password=hash_password("Manager@123")),
         User(id="u-safe-0001", email="safety@mineguard.ai", full_name="Priya Nair",
-             role="safety_officer", hashed_password=hash_password("Safety@123")),
+             role="safety_officer", hashed_password=hash_password("Safety@123"),
+             permitted_mine_ids=["m-demo-a-0001"]),
         User(id="u-env-0001", email="env@mineguard.ai", full_name="Karan Desai",
-             role="environmental_officer", hashed_password=hash_password("Env@123")),
+             role="environmental_officer", hashed_password=hash_password("Env@123"),
+             permitted_mine_ids=["m-demo-a-0001"]),
+        # Spec §45 demo pair: two coal mines side by side, each with its own
+        # manager; officers are assigned ONLY to demo mine A so cross-mine
+        # isolation is observable with real demo accounts.
+        User(id="u-demo-mgr-a", email="manager.a@mineguard.ai", full_name="Anita Rao",
+             role="mine_manager", hashed_password=hash_password("ManagerA@123")),
+        User(id="u-demo-mgr-b", email="manager.b@mineguard.ai", full_name="Vikram Sethi",
+             role="mine_manager", hashed_password=hash_password("ManagerB@123")),
     ]
     db.add_all(users)
 
     mines = [
-        Mine(id="m-iron-0001", name="Keonjhar Iron Ore Mine", code="MINE-KIR", mine_type="open_cast",
-             status="operational", location="Keonjhar, Odisha", latitude=21.6289, longitude=85.5846,
-             manager_id="u-mgr-0001", description="Simulated open-cast iron ore operation (demo data)."),
+        Mine(id="m-demo-a-0001", name="Demo Coal Mine A", code="MINE-DM1", mine_type="underground",
+             status="operational", location="Jharia, Jharkhand", latitude=23.7957, longitude=86.4304,
+             manager_id="u-demo-mgr-a",
+             description="Simulated underground coal operation (demo data) — officer scope mine."),
+        Mine(id="m-demo-b-0001", name="Demo Coal Mine B", code="MINE-DM2", mine_type="open_cast",
+             status="operational", location="Korba, Chhattisgarh", latitude=22.3475, longitude=82.6792,
+             manager_id="u-demo-mgr-b",
+             description="Simulated open-cast coal operation (demo data) — manager-B scope mine."),
         Mine(id="m-coal-0002", name="Talcher Coal Mine", code="MINE-TCH", mine_type="underground",
              status="maintenance", location="Talcher, Odisha", manager_id="u-mgr-0001",
              description="Simulated underground coal operation (demo data)."),
-        Mine(id="m-baux-0003", name="Damanjodi Bauxite Mine", code="MINE-DBX", mine_type="mixed",
-             status="suspended", location="Damanjodi, Odisha", manager_id="u-mgr-0001",
-             description="Simulated mixed bauxite site (demo data)."),
     ]
     db.add_all(mines)
 
@@ -76,14 +87,15 @@ def _seed(db) -> None:
     db.add_all(rules)
 
     zones = [
-        RestrictedZone(id="z-blast-0001", mine_id="m-iron-0001", name="Blast Zone A",
-                       camera_id="CAM-KIR-01", description="Active blasting area (demo)."),
-        RestrictedZone(id="z-haul-0002", mine_id="m-iron-0001", name="Haul Road Crossing",
-                       camera_id="CAM-KIR-02"),
         RestrictedZone(id="z-gas-0003", mine_id="m-coal-0002", name="Gassy Panel 3",
                        camera_id="CAM-TCH-01"),
-        RestrictedZone(id="z-crush-0004", mine_id="m-baux-0003", name="Crusher Bay",
-                       camera_id="CAM-DBX-01"),
+        RestrictedZone(id="z-demo-a-0005", mine_id="m-demo-a-0001", name="Ventilation Shaft Area",
+                       camera_id="CAM-DM1-01", description="Restricted area near upcast shaft (demo)."),
+        RestrictedZone(id="z-demo-b-0006", mine_id="m-demo-b-0001", name="Benches 4–5",
+                       camera_id="CAM-DM2-01", description="Deep bench haul route (demo)."),
+        # Coal haul road zone so vehicle events stay coal-specific.
+        RestrictedZone(id="z-haul-0007", mine_id="m-demo-a-0001", name="Haul Road Crossing",
+                       camera_id="CAM-DM1-02", description="Demo haul-road crossing (demo)."),
     ]
     db.add_all(zones)
     db.commit()
@@ -111,10 +123,10 @@ def _seed(db) -> None:
 
     # --- Camera events (all simulated) ---
     event_specs = [
-        ("restricted_zone_entry", "person", "critical", "z-blast-0001", "CAM-KIR-01"),
-        ("person_without_helmet", "person", "high", "z-haul-0002", "CAM-KIR-02"),
-        ("vehicle_in_restricted_area", "truck", "high", "z-gas-0003", "CAM-TCH-01"),
-        ("fire_smoke", "smoke", "critical", "z-crush-0004", "CAM-DBX-01"),
+        ("restricted_zone_entry", "person", "critical", "z-gas-0003", "CAM-TCH-01"),
+        ("person_without_helmet", "person", "high", "z-haul-0007", "CAM-DM1-02"),
+        ("vehicle_in_restricted_area", "truck", "high", "z-demo-b-0006", "CAM-DM2-01"),
+        ("person_without_helmet", "person", "high", "z-demo-a-0005", "CAM-DM1-01"),
     ]
     events: list[CameraEvent] = []
     for i, (etype, obj, sev, zone_id, cam) in enumerate(event_specs * 3):
@@ -158,13 +170,13 @@ def _seed(db) -> None:
                  description="Simulated gas spike triggered evacuation drill.",
                  category="gas", severity="critical", status="action_required",
                  occurred_at=NOW - timedelta(days=3)),
-        Incident(id="i-0002", mine_id="m-iron-0001", reported_by_id="u-mgr-0001",
-                 title="Haul truck near-miss (simulated)",
+        Incident(id="i-0002", mine_id="m-demo-a-0001", reported_by_id="u-mgr-0001",
+                 title="Haul truck near-miss at Haul Road Crossing (simulated)",
                  category="vehicle", severity="high", status="investigating",
                  occurred_at=NOW - timedelta(days=1)),
     ]
     inspections = [
-        Inspection(id="ins-0001", mine_id="m-iron-0001", inspector_id="u-safe-0001",
+        Inspection(id="ins-0001", mine_id="m-demo-a-0001", inspector_id="u-safe-0001",
                    inspection_type="safety", status="completed",
                    scheduled_at=NOW - timedelta(days=5), completed_at=NOW - timedelta(days=5),
                    compliance_result="compliant", findings="Simulated findings: PPE compliance strong."),
@@ -172,7 +184,7 @@ def _seed(db) -> None:
                    inspection_type="environmental", status="completed",
                    scheduled_at=NOW - timedelta(days=2), completed_at=NOW - timedelta(days=2),
                    compliance_result="non_compliant", findings="Simulated findings: ventilation lag."),
-        Inspection(id="ins-0003", mine_id="m-baux-0003", inspector_id="u-safe-0001",
+        Inspection(id="ins-0003", mine_id="m-demo-b-0001", inspector_id="u-safe-0001",
                    inspection_type="compliance", status="scheduled",
                    scheduled_at=NOW + timedelta(days=2)),
     ]

@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import App from './App'
 import { AuthProvider } from './context/AuthContext'
+import { MineSelectionProvider } from './context/MineSelectionContext'
 import { RequireAuth } from './components/RequireAuth'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
@@ -36,11 +37,15 @@ import {
   TelemetryPage,
   WorkforcePage,
 } from './pages/GovernancePages'
+import { ReportsPage } from './pages/ReportsPage'
+import { ToastProvider } from './components/ui'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
+        <MineSelectionProvider>
+        <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
@@ -68,6 +73,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/governance/geofencing" element={<GeofencePage />} />
             <Route path="/governance/risk" element={<GovernanceRiskPage />} />
             <Route path="/governance/audit" element={<AuditLogPage />} />
+            <Route path="/governance/reports" element={<ReportsPage />} />
             <Route path="/governance/notifications" element={<NotificationsPage />} />
             <Route path="/governance/ai" element={<AiWorkbenchPage />} />
             <Route path="/users" element={<RequireAuth roles={['admin']}><UsersPage /></RequireAuth>} />
@@ -75,6 +81,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </ToastProvider>
+        </MineSelectionProvider>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,

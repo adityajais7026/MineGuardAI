@@ -257,6 +257,9 @@ export interface Inspection {
   notes: string | null
   created_at: string
   updated_at: string
+  /** Governance review workflow (nullable until first review action). */
+  review_status?: 'pending' | 'under_review' | 'approved' | 'closed' | 'rejected' | null
+  review_notes?: string | null
 }
 
 export interface CorrectiveAction {

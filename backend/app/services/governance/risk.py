@@ -49,16 +49,13 @@ def compute_mine_risk(db: Session, mine_id: str) -> dict:
 
     # --- Overdue corrective actions (heaviest weight) ---
     action_rows = db.execute(
-        select(CorrectiveAction, Incident.mine_id)
+        select(CorrectiveAction, Incident.mine_id, Inspection.mine_id)
         .join(Incident, CorrectiveAction.incident_id == Incident.id, isouter=True)
         .join(Inspection, CorrectiveAction.inspection_id == Inspection.id, isouter=True)
         .where(CorrectiveAction.status.notin_(("completed", "overdue")))
     ).all()
     n_overdue = 0
-    for action, inc_mine_id, insp_mine_id in [
-        (a, i_m, ii_m) for a, i_m, ii_m in
-        [(row[0], row[1], row[2]) for row in action_rows]
-    ]:
+    for action, inc_mine_id, insp_mine_id in action_rows:
         mine = inc_mine_id or insp_mine_id
         if mine != mine_id:
             continue

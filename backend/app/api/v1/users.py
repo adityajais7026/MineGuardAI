@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.roles import write_access
-from app.core.security import get_current_user, hash_password
+from app.core.security import get_current_user, hash_password, require_roles
 from app.database.models import User
 from app.database.session import get_db
 from app.schemas import UserCreate, UserResponse, UserUpdate
@@ -26,7 +26,8 @@ def _to_response(user: User) -> UserResponse:
     return data
 
 
-@router.get("", response_model=PaginatedResponse[UserResponse])
+@router.get("", response_model=PaginatedResponse[UserResponse],
+           dependencies=[Depends(require_roles("admin"))])
 def list_users(
     db: DbSession,
     skip: int = Query(default=0, ge=0),
@@ -71,7 +72,8 @@ def create_user(db: DbSession, payload: UserCreate):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=UserResponse,
+           dependencies=[Depends(require_roles("admin"))])
 def get_user(db: DbSession, user_id: str):
     return _to_response(service.get(db, user_id))
 

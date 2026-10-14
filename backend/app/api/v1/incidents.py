@@ -5,8 +5,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, scope_column, visible_mine_ids
 from app.core.roles import write_access
-from app.core.security import get_current_user
+from app.core.security import CurrentUser, get_current_user
 from app.database.models import Incident, User
 from app.database.session import get_db
 from app.schemas import IncidentCreate, IncidentResponse, IncidentUpdate
@@ -27,6 +28,7 @@ def _validate_reporter(db: Session, reported_by_id: str | None) -> None:
 @router.get("", response_model=PaginatedResponse[IncidentResponse])
 def list_incidents(
     db: DbSession,
+    user: CurrentUser,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_id: str | None = None,
@@ -48,13 +50,15 @@ def list_incidents(
         },
         sort=sort,
         order=order,
+        additional_filter=scope_column(Incident.mine_id, visible_mine_ids(db, user)),
     )
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 
 @router.post("", response_model=IncidentResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(write_access("incidents"))])
-def create_incident(db: DbSession, payload: IncidentCreate):
+def create_incident(db: DbSession, payload: IncidentCreate, user: CurrentUser):
+    ensure_mine_in_scope(db, user, payload.mine_id)
     _validate_reporter(db, payload.reported_by_id)
     data = payload.model_dump()
     if data.get("occurred_at") is None:
@@ -67,14 +71,17 @@ def create_incident(db: DbSession, payload: IncidentCreate):
 
 
 @router.get("/{incident_id}", response_model=IncidentResponse)
-def get_incident(db: DbSession, incident_id: str):
-    return service.get(db, incident_id)
+def get_incident(db: DbSession, incident_id: str, user: CurrentUser):
+    incident = service.get(db, incident_id)
+    ensure_mine_in_scope(db, user, incident.mine_id)
+    return incident
 
 
 @router.patch("/{incident_id}", response_model=IncidentResponse,
                dependencies=[Depends(write_access("incidents"))])
-def update_incident(db: DbSession, incident_id: str, payload: IncidentUpdate):
+def update_incident(db: DbSession, incident_id: str, payload: IncidentUpdate, user: CurrentUser):
     incident = service.get(db, incident_id)
+    ensure_mine_in_scope(db, user, incident.mine_id)
     data = payload.model_dump(exclude_unset=True)
     if "reported_by_id" in data:
         _validate_reporter(db, data["reported_by_id"])
@@ -94,5 +101,7 @@ def update_incident(db: DbSession, incident_id: str, payload: IncidentUpdate):
 
 @router.delete("/{incident_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("incidents"))])
-def delete_incident(db: DbSession, incident_id: str):
+def delete_incident(db: DbSession, incident_id: str, user: CurrentUser):
+    incident = service.get(db, incident_id)
+    ensure_mine_in_scope(db, user, incident.mine_id)
     service.delete(db, incident_id)

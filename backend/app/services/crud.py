@@ -36,12 +36,19 @@ class CrudService:
         filters: dict[str, Any] | None = None,
         sort: str | None = None,
         order: str = "desc",
+        additional_filter=None,
     ) -> tuple[Sequence[Any], int]:
-        """Return (items, total). Whitelisted equality filters + safe sorting."""
+        """Return (items, total). Whitelisted equality filters + safe sorting.
+
+        `additional_filter` (optional SQLAlchemy expression) lets routers inject
+        row-level scoping (e.g. mine isolation) without bypassing this service.
+        """
         query = select(self.model)
         for field, value in (filters or {}).items():
             if value is not None and field in self._columns:
                 query = query.where(getattr(self.model, field) == value)
+        if additional_filter is not None:
+            query = query.where(additional_filter)
 
         total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
 

@@ -169,3 +169,28 @@ def test_403_response_is_informative(client, as_role):
     })
     assert r.status_code == 403
     assert "environmental_officer" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------- #
+# User directory privacy + admin-listing SQL safety (PostgreSQL case)
+# --------------------------------------------------------------------- #
+def test_user_directory_is_admin_only(client, as_role):
+    """GET /api/users exposes the full directory (emails, roles, mobiles);
+    only admins may read it. Operational roles must not see user admin data."""
+    for uid in (MANAGER, SAFETY, ENV):
+        as_role(uid)
+        assert client.get("/api/users").status_code == 403
+        assert client.get(f"/api/users/{ADMIN}").status_code == 403
+
+
+def test_admin_alert_listing_uses_valid_sql_predicate(client):
+    """Admin scope (no restriction) must compile to an always-true predicate,
+    NOT the bare mine_id column: on PostgreSQL the bare string column made
+    ``WHERE status='new' AND alerts.mine_id`` a runtime type error (500)."""
+    r = client.get("/api/alerts", params={"status": "new"})
+    assert r.status_code == 200
+    from app.core.mine_scope import scope_column
+    from app.database.models import Alert
+    pred = scope_column(Alert.mine_id, None)
+    # It must be a boolean-producing expression, not the bare String column.
+    assert str(pred).lower() in ("true", "true_"), str(pred)

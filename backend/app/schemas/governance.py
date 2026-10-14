@@ -123,7 +123,7 @@ class EvidenceOut(BaseModel):
 
 class ReviewTransitionOut(BaseModel):
     inspection_id: str
-    review_status: str
+    review_status: str | None = None
     reviewed_by_id: str | None = None
     reviewed_at: datetime | None = None
     review_notes: str | None = None

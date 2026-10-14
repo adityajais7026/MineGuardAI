@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.database import models
 
 MODEL_PATH = Path(settings.YOLO_MODEL_PATH)
 MODEL_EXISTS = MODEL_PATH.exists() or Path("../ai/yolo/models/vyra_yolov8m_ppe.pt").exists()
@@ -51,9 +52,15 @@ def test_live_frame_requires_auth(anon_client):
     assert r.status_code == 401
 
 
-def test_live_frame_forbidden_for_non_write_roles(client, as_role):
-    as_role("u-env-0001")  # environmental_officer: not in ai_simulation write roles
+def test_live_frame_forbidden_for_non_write_roles(client, as_role, db_session):
+    # Environmental officers use live detection ONLY on explicitly permitted
+    # mines; an officer with no assignment must still be forbidden everywhere.
+    env_user = db_session.get(models.User, "u-env-0001")
+    saved = list(env_user.permitted_mine_ids or [])
+    env_user.permitted_mine_ids = []
+    as_role("u-env-0001")
     r = client.post("/api/ai/detect/frame", json=_frame_payload("m-test-0001"))
+    env_user.permitted_mine_ids = saved
     assert r.status_code == 403
 
 

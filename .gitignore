@@ -44,6 +44,13 @@ backend/media/
 .DS_Store
 Thumbs.db
 
+# Local-only backup / experimental artifacts & runtime pid files
+# (pre-commit safety: duplicates and unevaluated model weights never ship)
+*.bak
+*.pid
+yolo11n.pt
+backend/mineguardai.dev.db.bak-*
+
 # Logs
 logs/
 *.log

@@ -10,6 +10,10 @@
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
+/** Public alias so authenticated download helpers (e.g. ReportsPage blob URLs)
+ *  can build absolute URLs exactly like apiFetch does. */
+export const BASE_URL_RESOLVED = BASE_URL
+
 export class ApiError extends Error {
   status: number
   details?: unknown

@@ -349,10 +349,16 @@ export default function LiveDetectionPage() {
     <div className="page">
       <PageHeader
         title="Live Webcam Detection"
-        subtitle="Real-time YOLO PPE detection from your webcam — same model, policy and alert pipeline as uploads"
-        actions={phase === 'live' || phase === 'paused' || phase === 'starting' ? (
-          <button className="btn btn-danger" onClick={stopCamera}>■ Stop camera</button>
-        ) : undefined}
+        subtitle="Real-time PPE detection from your webcam — same model, policy and alert pipeline as uploads"
+        actions={
+          <>
+            <Badge text="LIVE" tone="ok" dot />
+            <Badge text="RESEARCH-VALIDATED PPE MODEL" tone="info" />
+            {(phase === 'live' || phase === 'paused' || phase === 'starting') && (
+              <button className="btn btn-danger" onClick={stopCamera}>■ Stop camera</button>
+            )}
+          </>
+        }
       />
 
       <div className="live-grid">
@@ -366,8 +372,15 @@ export default function LiveDetectionPage() {
                 {phase === 'starting' ? 'Starting camera…' : 'Camera stopped'}
               </div>
             )}
+            <div className="live-chips">
+              <span className="live-chip rec">REC</span>
+              {phase === 'live' && <span className="live-chip mode-live">MODE: LIVE ANALYSIS</span>}
+              {phase === 'paused' && <span className="live-chip">MODE: PAUSED</span>}
+            </div>
             {phase === 'live' && lastResult && (
-              <div className="live-verdict-chip">{summary?.title ?? 'Analysing…'}</div>
+              <div className="live-chips" style={{ top: 'auto', bottom: '.55rem' }}>
+                <span className="live-chip">{summary?.title ?? 'Analysing…'}</span>
+              </div>
             )}
           </div>
 
@@ -382,7 +395,7 @@ export default function LiveDetectionPage() {
               <button className="btn" onClick={pauseCamera} disabled={phase !== 'live'}>⏸ Pause</button>
             )}
             <button className="btn" onClick={resetSession} disabled={phase === 'idle'}>Reset session</button>
-            <span className={`live-status-dot ${phase === 'live' ? 'dot-live' : 'dot-off'}`}>
+            <span className={`live-status-dot ${phase === 'live' ? 'dot-live' : phase === 'paused' ? 'dot-paused' : 'dot-off'}`}>
               {phase === 'live' ? 'LIVE' : phase === 'paused' ? 'PAUSED' : 'OFF'}
             </span>
           </div>

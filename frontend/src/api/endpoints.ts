@@ -410,6 +410,24 @@ export const governanceApi = {
 
   // AI workbench
   aiCapabilities: () => api.get<Record<string, AiCapability>>('/api/governance/ai/capabilities'),
+
+  // Lightweight status probes for the shell's attention indicators — thin
+  // wrappers over EXISTING endpoints (no new backend routes).
+  alertsStatus: async (): Promise<{ has_active: boolean; active: number }> => {
+    const d = await api.get<{ items: unknown[]; total: number }>('/api/alerts',
+      { status: 'new', limit: 1 })
+    const investigate = await api.get<{ items: unknown[]; total: number }>('/api/alerts',
+      { status: 'acknowledged', limit: 1 })
+    return { has_active: d.total > 0 || investigate.total > 0, active: d.total + investigate.total }
+  },
+  emergencyStatus: async (): Promise<{ has_open: boolean }> => {
+    const d = await api.get<Emergency[]>('/api/governance/emergencies', { status: 'open' })
+    return { has_open: d.length > 0 }
+  },
+  unreadStatus: async (): Promise<{ has_unread: boolean }> => {
+    const d = await api.get<GovernanceNotification[]>('/api/governance/notifications', { unread_only: true })
+    return { has_unread: d.length > 0 }
+  },
   ocr: (dataBase64: string, mimeType?: string) =>
     api.post<{ status: string; text: string | null; message: string | null }>('/api/governance/ai/ocr',
       { data_base64: dataBase64, mime_type: mimeType }),

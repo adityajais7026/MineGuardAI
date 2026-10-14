@@ -5,8 +5,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, scope_column, visible_mine_ids
 from app.core.roles import write_access
-from app.core.security import get_current_user
+from app.core.security import CurrentUser, get_current_user
 from app.database.models import Inspection, User
 from app.database.session import get_db
 from app.schemas import InspectionCreate, InspectionResponse, InspectionUpdate
@@ -28,6 +29,7 @@ def _validate_inspector(db: Session, inspector_id: str | None) -> None:
 @router.get("", response_model=PaginatedResponse[InspectionResponse])
 def list_inspections(
     db: DbSession,
+    user: CurrentUser,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_id: str | None = None,
@@ -49,13 +51,15 @@ def list_inspections(
         },
         sort=sort,
         order=order,
+        additional_filter=scope_column(Inspection.mine_id, visible_mine_ids(db, user)),
     )
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 
 @router.post("", response_model=InspectionResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(write_access("inspections"))])
-def create_inspection(db: DbSession, payload: InspectionCreate):
+def create_inspection(db: DbSession, payload: InspectionCreate, user: CurrentUser):
+    ensure_mine_in_scope(db, user, payload.mine_id)
     _validate_inspector(db, payload.inspector_id)
     if payload.completed_at and payload.status == "scheduled":
         raise HTTPException(
@@ -70,15 +74,18 @@ def create_inspection(db: DbSession, payload: InspectionCreate):
 
 
 @router.get("/{inspection_id}", response_model=InspectionResponse)
-def get_inspection(db: DbSession, inspection_id: str):
-    return service.get(db, inspection_id)
+def get_inspection(db: DbSession, inspection_id: str, user: CurrentUser):
+    inspection = service.get(db, inspection_id)
+    ensure_mine_in_scope(db, user, inspection.mine_id)
+    return inspection
 
 
 @router.patch("/{inspection_id}", response_model=InspectionResponse,
                dependencies=[Depends(write_access("inspections"))])
-def update_inspection(db: DbSession, inspection_id: str, payload: InspectionUpdate):
+def update_inspection(db: DbSession, inspection_id: str, payload: InspectionUpdate, user: CurrentUser):
     """Record findings / mark compliance; completion requires consistency."""
     inspection = service.get(db, inspection_id)
+    ensure_mine_in_scope(db, user, inspection.mine_id)
     data = payload.model_dump(exclude_unset=True)
     if "inspector_id" in data:
         _validate_inspector(db, data["inspector_id"])
@@ -105,5 +112,7 @@ def update_inspection(db: DbSession, inspection_id: str, payload: InspectionUpda
 
 @router.delete("/{inspection_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("inspections"))])
-def delete_inspection(db: DbSession, inspection_id: str):
+def delete_inspection(db: DbSession, inspection_id: str, user: CurrentUser):
+    inspection = service.get(db, inspection_id)
+    ensure_mine_in_scope(db, user, inspection.mine_id)
     service.delete(db, inspection_id)

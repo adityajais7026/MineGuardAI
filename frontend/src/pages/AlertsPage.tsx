@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { alertsApi } from '../api/endpoints'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
-import { EmptyState, ErrorState, Loading, PageHeader, SeverityBadge, SimulatedDataNote, StatusBadge } from '../components/ui'
+import { Badge, EmptyState, ErrorState, Loading, PageHeader, SeverityBadge, SimulatedDataNote, StatusBadge } from '../components/ui'
 
 export default function AlertsPage() {
   const [status, setStatus] = useState('')
@@ -35,7 +35,11 @@ export default function AlertsPage() {
 
   return (
     <div className="page">
-      <PageHeader title="Alerts" subtitle="Environmental & safety alerts raised by the compliance and camera pipelines" />
+      <PageHeader
+        title="Alerts"
+        subtitle="Environmental & safety alerts raised by the compliance and camera pipelines"
+        actions={<Badge text={`${data?.total ?? 0} TOTAL`} tone="muted" />}
+      />
 
       <div className="filter-bar">
         <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(0) }} aria-label="Status">
@@ -63,7 +67,7 @@ export default function AlertsPage() {
               <thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Source</th><th>Created</th><th>Actions</th></tr></thead>
               <tbody>
                 {data!.items.map((a) => (
-                  <tr key={a.id}>
+                  <tr key={a.id} className={a.severity === 'critical' && a.status === 'new' ? 'row-critical' : undefined}>
                     <td>
                       {a.title}
                       {a.description && <><br /><small className="muted">{a.description}</small></>}

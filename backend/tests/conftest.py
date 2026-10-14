@@ -46,8 +46,10 @@ def db_session(db_engine):
     session.add_all([
         models.User(id="u-admin-0001", email="admin@test.ai", full_name="Admin", role="admin", hashed_password="x"),
         models.User(id="u-mgr-0001", email="manager@test.ai", full_name="Manager", role="mine_manager", hashed_password="x"),
-        models.User(id="u-safe-0001", email="safety@test.ai", full_name="Safety", role="safety_officer", hashed_password="x"),
-        models.User(id="u-env-0001", email="env@test.ai", full_name="Env", role="environmental_officer", hashed_password="x"),
+        models.User(id="u-safe-0001", email="safety@test.ai", full_name="Safety", role="safety_officer", hashed_password="x",
+                    permitted_mine_ids=["m-test-0001"]),
+        models.User(id="u-env-0001", email="env@test.ai", full_name="Env", role="environmental_officer", hashed_password="x",
+                    permitted_mine_ids=["m-test-0001"]),
         models.Mine(id="m-test-0001", name="Test Mine", code="MINE-TST", mine_type="open_cast",
                     status="operational", location="Testville"),
         models.ComplianceRule(id="r-test-0001", name="PM2.5 limit", parameter="pm2_5", operator=">",
