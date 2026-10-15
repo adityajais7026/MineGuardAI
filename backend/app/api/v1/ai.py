@@ -39,23 +39,21 @@ def detector_info():
     simulated = get_detector().health()
     if settings.AI_SERVICE_URL:
         from app.services.detectors.remote_vyra import get_remote_vyra_service
-
+        remote = get_remote_vyra_service()
         return {
             "configured": "remote_worker",
             "simulated": simulated,
-            # local detector intentionally NOT deep-probed here (no torch load)
             "yolo": {
                 "detector": "YOLODetector", "source": "yolo", "available": False,
-                "status": "delegated", "error": (
-                    "inference runs on the remote AI worker (AI_SERVICE_URL)"
-                ),
+                "status": "delegated",
+                "error": "inference runs on the remote AI worker (AI_SERVICE_URL)",
             },
             "yolo_world": {
                 "detector": "YOLOWorldDetector", "source": "yolo_world",
                 "available": False, "experimental": True,
                 "error": "delegated to the remote AI worker",
             },
-            "remote": get_remote_vyra_service().model_info(),
+            **remote.model_info(),
         }
     from app.services.yolo_detection import get_yolo_service
     from app.services.detectors.yolo_world import get_yolo_world_service
