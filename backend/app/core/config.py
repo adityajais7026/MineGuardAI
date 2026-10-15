@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # "yolo" keeps selecting it with byte-identical behaviour.
     AI_DETECTOR_YOLO_WORLD_MODEL_PATH: str = "ai/yolo/models/custom_yolov8s_mining.pt"
 
+    # --- Remote Vyra inference worker (Render Free cannot hold YOLOv8m) ------
+    # When AI_SERVICE_URL is set, ALL image/video/frame inference is delegated
+    # to the dedicated worker process, e.g. `https://<tunnel>/detect` behind
+    # AI_SERVICE_TOKEN (bearer) — the token is never logged or committed.
+    # Strict timeout (requirements: 10 s max); any failure returns an honest
+    # 503, never a fallback detection. Unset = pre-existing local behaviour.
+    AI_SERVICE_URL: str = ""
+    AI_SERVICE_TOKEN: str = ""
+    AI_SERVICE_TIMEOUT_SECONDS: int = 10
+
     # --- Live multi-person anchor strategy (OPT-IN) -------------------------
     # "default"      -> exactly the pre-anchor behaviour (Vyra only, global
     #                   event cooldown, synchronous evidence upload).

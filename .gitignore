@@ -20,6 +20,12 @@ snapshots/
 # AI model artifacts (never commit model weights)
 ai/yolo/models/*.pt
 
+# --- local AI inference worker (Phase 2): code committed, data/local-only ---
+# Real webcam demo snapshots + annotated test outputs = personal media, never
+# committed. Worker source (worker/, run_worker.py, test_worker.py, README) IS.
+ai/inference_worker/test_images/
+ai/inference_worker/inference_worker_test_output_*.png
+
 # --- local-only ML tooling & artifacts (never deploy, never publish) ---
 # Custom PPE training packages are huge (150 MB) and ship dataset binaries.
 # Weights + diagnostics stay on the local machine only.

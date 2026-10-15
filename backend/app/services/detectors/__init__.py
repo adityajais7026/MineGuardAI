@@ -47,16 +47,22 @@ def get_detector_by_name(name: str):
 
 
 def resolve_media_detector():
-    """Detector that owns image/video/frame inference, chosen by AI_DETECTOR.
+    """Detector that owns image/video/frame inference, chosen by settings.
 
-    "simulated" or unknown  -> None (endpoints keep their 503 semantics)
-    "yolo"                  -> production YoloService (Vyra) — UNCHANGED default
-    "yolo_world"            -> EXPERIMENTAL open-vocabulary detector (opt-in)
+    Precedence (checked top-down):
+      1. AI_SERVICE_URL set       -> remote AI worker (off-Render Vyra; the
+                                     memory-capped backend must NOT load the
+                                     model itself — see remote_vyra.py).
+      2. AI_DETECTOR={yolo,yolo_world} -> local detectors (unchanged default
+                                     path when no worker is configured).
 
-    Both backends share the YoloService public surface
+    All backends share the YoloService public surface
     (model_info / detect_image_bytes / detect_video_file), so callers need no
     branching and no parallel pipeline exists.
     """
+    if settings.AI_SERVICE_URL:
+        from app.services.detectors.remote_vyra import get_remote_vyra_service
+        return get_remote_vyra_service()
     if settings.AI_DETECTOR == "yolo":
         from app.services.yolo_detection import get_yolo_service
         return get_yolo_service()

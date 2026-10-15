@@ -36,6 +36,18 @@ services:
         sync: false
       - key: WEIGHTS_URL         # private link to vyra_yolov8m_ppe.pt
         sync: false
+      # --- REMOTE Vyra inference worker (Phase 2, off-Render architecture) -----
+      # Render Free (512 MB) cannot run YOLOv8m in-process (verified OOM), so
+      # inference is delegated to the dedicated worker behind a tunneled HTTPS
+      # URL. Both secrets are entered ONCE in the dashboard (never in git):
+      #   AI_SERVICE_URL   = https://<tunnel-host>.trycloudflare.com
+      #   AI_SERVICE_TOKEN = the worker-only bearer token (backend env as well)
+      # When AI_SERVICE_URL is set, the backend NEVER loads PyTorch/Vyra in
+      # process; worker offline => honest 503 + "AI detection unavailable" UI.
+      - key: AI_SERVICE_URL
+        sync: false
+      - key: AI_SERVICE_TOKEN
+        sync: false
       # --- production detector: Vyra (model + default strategy unchanged).
       #     NOTE: AI_DETECTOR_STRATEGY=person_anchor (Vyra + yolo11n anchor +
       #     ByteTrack, verified locally) OOM-kills the 512MB free instance —

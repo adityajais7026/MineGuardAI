@@ -583,7 +583,11 @@ def detect_live_frame(
         detections, zone_name=zone.name if zone else None, is_restricted_zone=zone is not None
     )
 
-    model_version = f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    model_version = (
+        f"yolo:{Path(settings.YOLO_MODEL_PATH).name} (remote worker)"
+        if settings.AI_SERVICE_URL
+        else f"yolo:{Path(settings.YOLO_MODEL_PATH).name}"
+    )
     camera_id = _camera_id_for(body.mine_id, body.session_id)
     storage = get_storage()
     events_out: list[dict[str, Any]] = []
