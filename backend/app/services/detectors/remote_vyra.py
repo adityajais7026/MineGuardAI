@@ -111,8 +111,16 @@ class RemoteVyraDetector:
             logger.error("AI worker timeout after %.0f ms", self.timeout * 1000)
             raise RemoteInferenceUnavailable(f"timeout after {self.timeout}s ({exc.__class__.__name__})")
         except httpx.HTTPError as exc:
-            logger.error("AI worker unreachable: %s", exc.__class__.__name__)
-            raise RemoteInferenceUnavailable(f"worker unreachable ({exc.__class__.__name__})")
+            # DIAGNOSTIC (temporary): the class name alone could not distinguish
+            # the root causes of the seen 'LocalProtocolError'. Include the
+            # exception message; h11 messages may echo header payloads, so any
+            # bearer token inside is redacted — the token never reaches logs.
+            raw = str(exc)
+            redacted = raw.split("Bearer ")[0] + ("Bearer <redacted>" if "Bearer " in raw else "")
+            logger.error("AI worker unreachable: %s: %s", exc.__class__.__name__, redacted)
+            raise RemoteInferenceUnavailable(
+                f"worker unreachable ({exc.__class__.__name__}: {redacted})"
+            )
 
         if resp.status_code != 200:
             logger.error("AI worker returned %s", resp.status_code)
