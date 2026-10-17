@@ -111,22 +111,12 @@ class RemoteVyraDetector:
             logger.error("AI worker timeout after %.0f ms", self.timeout * 1000)
             raise RemoteInferenceUnavailable(f"timeout after {self.timeout}s ({exc.__class__.__name__})")
         except httpx.HTTPError as exc:
-            # DIAGNOSTIC (temporary): production threw
-            #   LocalProtocolError: Illegal header value b'Bearer ...'
-            # while the request never left the container. Expose WHERE the
-            # illegal byte sits WITHOUT leaking the secret: every printable
-            # token byte is masked with '*', only non-printable bytes and
-            # their byte-offsets from the end of the header value are shown.
-            raw = str(exc)
-            masked = ""
-            for ch in raw:
-                if ch.isprintable() and not ch.isspace() and (ch.isalnum() or ch in "_-+/.=:"):
-                    masked += "*"
-                else:
-                    masked += ch
-            logger.error("AI worker unreachable: %s: %s", exc.__class__.__name__, masked)
+            # Never log/expose the Authorization header byte content: the
+            # token could otherwise end up in client-visible 503 details or
+            # server logs. Class name + clean message are enough for ops.
+            logger.error("AI worker unreachable: %s", exc.__class__.__name__)
             raise RemoteInferenceUnavailable(
-                f"worker unreachable ({exc.__class__.__name__}: {masked})"
+                f"worker unreachable ({exc.__class__.__name__})"
             )
 
         if resp.status_code != 200:
