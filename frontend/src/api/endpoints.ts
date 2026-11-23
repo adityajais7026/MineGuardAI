@@ -1,6 +1,8 @@
 /** Typed endpoint wrappers — one place where API paths live. */
 import { api } from './client'
 import type {
+  AdminOverview,
+  AdminRolesResponse,
   Alert,
   CameraEvent,
   ComplianceRule,
@@ -20,11 +22,14 @@ import type {
   Mine,
   OtpSendResponse,
   Paginated,
+  PasswordResetResult,
+  PlatformConfig,
   RegisterCompleteRequest,
   RegisterCompleteResponse,
   RegisterVerifyResponse,
   RestrictedZone,
   RiskAssessment,
+  SystemHealth,
   User,
   UserDeleteImpact,
 } from './types'
@@ -43,6 +48,9 @@ export const authApi = {
     return api.postForm<LoginResponse>('/api/auth/login', form)
   },
   me: () => api.get<User>('/api/auth/me'),
+  /** Self-service change; also the exit from an administrator temporary password. */
+  changePassword: (current_password: string, new_password: string) =>
+    api.post<LoginResponse>('/api/auth/change-password', { current_password, new_password }),
 
   // --- MSG91 SMS OTP flows (same JWT auth; secrets stay server-side) ---
   loginOtpStart: (email: string, password: string) =>
@@ -60,6 +68,17 @@ export const authApi = {
    *  invitation-fixed role (the register form never offers a role choice). */
   validateInvitation: (code: string, email: string) =>
     api.get<InvitationValidate>('/api/auth/invitations/validate', { code, email }),
+}
+
+/**
+ * Platform administration (admin-only; the backend enforces the role, the UI
+ * only decides what to show). All numbers come from live database queries.
+ */
+export const adminApi = {
+  overview: () => api.get<AdminOverview>('/api/admin/overview'),
+  systemHealth: () => api.get<SystemHealth>('/api/admin/system-health'),
+  roles: () => api.get<AdminRolesResponse>('/api/admin/roles'),
+  config: () => api.get<PlatformConfig>('/api/admin/config'),
 }
 
 export const minesApi = {
@@ -167,6 +186,9 @@ export const usersApi = {
     api.delete<{ detail: string }>(`/api/users/invitations/${encodeURIComponent(id)}`),
 
   // --- Permanent deletion (admin, with explicit confirmation in the UI) ---
+  /** Administrator reset: returns the temporary password exactly once. */
+  resetPassword: (id: string) =>
+    api.post<PasswordResetResult>(`/api/users/${id}/password-reset`, {}),
   deleteImpact: (id: string) => api.get<UserDeleteImpact>(`/api/users/${id}/impact`),
   deletePermanent: (id: string) => api.delete<DeleteUserReport>(`/api/users/${id}/permanent`),
 }
@@ -384,6 +406,8 @@ export const governanceApi = {
   // Telemetry
   devices: (mineId?: string) => api.get<SensorDevice[]>('/api/governance/telemetry/devices', { mine_id: mineId }),
   createDevice: (body: Record<string, unknown>) => api.post<SensorDevice>('/api/governance/telemetry/devices', body),
+  updateDevice: (id: string, body: Record<string, unknown>) =>
+    api.patch<SensorDevice>(`/api/governance/telemetry/devices/${id}`, body),
   readings: (params?: ListParams) => api.get<TelemetryReading[]>('/api/governance/telemetry/readings', params),
   addReading: (deviceId: string, value: number) =>
     api.post<TelemetryReading>('/api/governance/telemetry/readings', { device_id: deviceId, value }),

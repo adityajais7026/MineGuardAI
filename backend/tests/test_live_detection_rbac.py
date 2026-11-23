@@ -44,19 +44,29 @@ MSG_OFFICER = "restricted to the mines assigned to you"
 
 @pytest.fixture(autouse=True)
 def _reset_officer_scope(db_session):
-    """Keep the shared session-scoped DB pristine: the seeded officers start
-    with no permitted mines, and every test in this module must observe that
-    baseline regardless of what earlier tests granted (their PATCHes commit)."""
-    def _reset():
-        for uid in ("u-env-0001", "u-safe-0001"):
+    """Isolate this module's four-role matrix from earlier tests' grants.
+
+    Every test here starts from "officers have no permitted mines" regardless
+    of what other modules granted. The scopes that existed before the module
+    ran are restored afterwards, so the shared session-scoped database is left
+    exactly as it was found.
+    """
+    officers = ("u-env-0001", "u-safe-0001")
+
+    def _set(scopes: dict[str, list[str]]) -> None:
+        for uid, scope in scopes.items():
             user = db_session.get(models.User, uid)
             if user is not None:
-                user.permitted_mine_ids = []
+                user.permitted_mine_ids = list(scope)
         db_session.commit()
 
-    _reset()
+    original = {
+        uid: list((db_session.get(models.User, uid).permitted_mine_ids or []))
+        for uid in officers if db_session.get(models.User, uid) is not None
+    }
+    _set({uid: [] for uid in original})
     yield
-    _reset()
+    _set(original)
 
 
 def _frame_payload(mine_id: str) -> dict:
@@ -168,28 +178,45 @@ def test_scoping_enforced_before_yolo_probe(client, as_role, monkeypatch):
 # ------------------------------------------------------------------ #
 # 3. permitted_mine_ids admin surface (PATCH semantics)
 # ------------------------------------------------------------------ #
+SAFETY_SEEDED_SCOPE = ["m-test-0001"]
+
+
+def _restore_safety_scope(client) -> None:
+    """The DB session is shared: never leave the officer's scope rewritten."""
+    client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": SAFETY_SEEDED_SCOPE})
+
+
 def test_patch_dedupes_and_returns_scope(client):
-    r = client.patch("/api/users/u-safe-0001", json={
-        "permitted_mine_ids": ["m-a", "m-a", "m-b", "m-a"],
-    })
-    assert r.status_code == 200
-    assert r.json()["permitted_mine_ids"] == ["m-a", "m-b"]
+    try:
+        r = client.patch("/api/users/u-safe-0001", json={
+            "permitted_mine_ids": ["m-a", "m-a", "m-b", "m-a"],
+        })
+        assert r.status_code == 200
+        assert r.json()["permitted_mine_ids"] == ["m-a", "m-b"]
+    finally:
+        _restore_safety_scope(client)
 
 
 def test_patch_null_leaves_scope_unchanged(client):
-    r1 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": ["m-a"]})
-    assert r1.status_code == 200
-    r2 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": None})
-    assert r2.status_code == 200
-    assert r2.json()["permitted_mine_ids"] == ["m-a"]  # explicit null = no change
+    try:
+        r1 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": ["m-a"]})
+        assert r1.status_code == 200
+        r2 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": None})
+        assert r2.status_code == 200
+        assert r2.json()["permitted_mine_ids"] == ["m-a"]  # explicit null = no change
+    finally:
+        _restore_safety_scope(client)
 
 
 def test_patch_empty_list_clears_scope(client):
-    r1 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": ["m-a"]})
-    assert r1.status_code == 200
-    r2 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": []})
-    assert r2.status_code == 200
-    assert r2.json()["permitted_mine_ids"] == []
+    try:
+        r1 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": ["m-a"]})
+        assert r1.status_code == 200
+        r2 = client.patch("/api/users/u-safe-0001", json={"permitted_mine_ids": []})
+        assert r2.status_code == 200
+        assert r2.json()["permitted_mine_ids"] == []
+    finally:
+        _restore_safety_scope(client)
 
 
 def test_upload_rbac_unchanged_for_environmental_officer(client, as_role):

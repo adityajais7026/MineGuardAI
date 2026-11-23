@@ -1,5 +1,6 @@
 """All v1 API routers, aggregated for registration in main.py."""
 from app.api.v1 import (
+    admin,
     alerts,
     ai,
     auth,
@@ -23,6 +24,7 @@ from app.api.v1 import (
 
 all_routers = [
     auth.router,
+    admin.router,  # platform administration (admin-only, read-mostly)
     user_management.router,  # static /users routes must precede users' /{user_id}
     users.router,
     mines.router,

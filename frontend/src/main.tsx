@@ -8,6 +8,7 @@ import { MineSelectionProvider } from './context/MineSelectionContext'
 import { RequireAuth } from './components/RequireAuth'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
+import ChangePasswordPage from './pages/ChangePasswordPage'
 import RegisterPage from './pages/RegisterPage'
 import DashboardPage from './pages/DashboardPage'
 import RiskPage from './pages/RiskPage'
@@ -38,6 +39,13 @@ import {
   WorkforcePage,
 } from './pages/GovernancePages'
 import { ReportsPage } from './pages/ReportsPage'
+import AdminMinesPage from './pages/admin/AdminMinesPage'
+import RolesPage from './pages/admin/RolesPage'
+import DevicesPage from './pages/admin/DevicesPage'
+import SystemHealthPage from './pages/admin/SystemHealthPage'
+import SystemConfigPage from './pages/admin/SystemConfigPage'
+import AdminNotificationsPage from './pages/admin/AdminNotificationsPage'
+import AdminReportsPage from './pages/admin/AdminReportsPage'
 import { ToastProvider } from './components/ui'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -48,6 +56,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/change-password" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
           <Route path="/register" element={<RegisterPage />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/" element={<App />} />
@@ -77,6 +86,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/governance/notifications" element={<NotificationsPage />} />
             <Route path="/governance/ai" element={<AiWorkbenchPage />} />
             <Route path="/users" element={<RequireAuth roles={['admin']}><UsersPage /></RequireAuth>} />
+            {/* Platform administration — admin-only pages; the backend re-checks every role. */}
+            <Route path="/admin/mines" element={<RequireAuth roles={['admin']}><AdminMinesPage /></RequireAuth>} />
+            <Route path="/admin/roles" element={<RequireAuth roles={['admin']}><RolesPage /></RequireAuth>} />
+            <Route path="/admin/devices" element={<RequireAuth roles={['admin']}><DevicesPage /></RequireAuth>} />
+            <Route path="/admin/system-health" element={<RequireAuth roles={['admin']}><SystemHealthPage /></RequireAuth>} />
+            <Route path="/admin/system-configuration" element={<RequireAuth roles={['admin']}><SystemConfigPage /></RequireAuth>} />
+            <Route path="/admin/notifications" element={<RequireAuth roles={['admin']}><AdminNotificationsPage /></RequireAuth>} />
+            <Route path="/admin/reports" element={<RequireAuth roles={['admin']}><AdminReportsPage /></RequireAuth>} />
             <Route path="/profile" element={<ProfilePage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

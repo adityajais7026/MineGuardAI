@@ -2,10 +2,13 @@
 Role-based access control (Phase 11).
 
 Permission model: read access for all authenticated users; write access by
-role. `admin` always has access. The map below is the single source of truth.
+role. The map below is the single source of truth and there is NO implicit
+administrator bypass — `admin` is listed explicitly in the platform areas it
+owns and is absent from the mine-safety areas it must not touch.
 
 Roles (existing users.role values, no schema change):
-    admin                 — full management incl. users
+    admin                 — platform administration only: users, mine registry,
+                            sensor-device registry (no operational writes)
     mine_manager          — mines, inspections, incidents, corrective actions
     safety_officer        — alerts, incidents, inspections, actions, camera events
     environmental_officer — environment, compliance rules, alerts, actions
@@ -18,9 +21,12 @@ from app.core.security import CurrentUser, RoleChecker, require_roles
 from app.database.models import User
 
 # Central permission map: endpoint-area -> roles allowed to write.
+# Platform administration areas name `admin` explicitly; operational areas do
+# not, which is what keeps administrators out of daily mine-safety work.
 WRITE_ROLES: dict[str, set[str]] = {
     "users": {"admin"},
-    "mines": {"mine_manager"},
+    # Mine registry (create/edit/deactivate) is platform administration.
+    "mines": {"admin", "mine_manager"},
     "compliance_rules": {"environmental_officer"},
     "environment": {"environmental_officer", "mine_manager", "safety_officer"},
     "compliance_engine": {"environmental_officer", "safety_officer"},
@@ -38,8 +44,20 @@ WRITE_ROLES: dict[str, set[str]] = {
     "workers": {"safety_officer", "mine_manager"},
     "contractors": {"safety_officer", "mine_manager"},
     "emergencies": {"safety_officer", "mine_manager", "environmental_officer"},
+    # Sensor-device registry (register/edit/activate) is platform
+    # infrastructure the administrator owns. Telemetry *readings* are
+    # operational measurements and stay with the safety/environment roles.
+    "device_registry": {"admin", "safety_officer", "environmental_officer"},
     "telemetry": {"safety_officer", "environmental_officer"},
 }
+
+# Areas administrators may write to. Kept as an explicit list so the API and
+# the UI can state the admin scope instead of claiming a blanket bypass.
+PLATFORM_ADMIN_AREAS: frozenset[str] = frozenset(area for area, roles in WRITE_ROLES.items() if "admin" in roles)
+
+
+def admin_can_write(area: str) -> bool:
+    return "admin" in WRITE_ROLES.get(area, set())
 
 
 def write_access(area: str) -> RoleChecker:

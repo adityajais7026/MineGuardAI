@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -17,6 +17,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # tokenUrl points at the login route for Swagger's "Authorize" button.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_PREFIX}/auth/login")
 
+# A user holding a temporary (administrator-issued) password may only read
+# their own profile and replace the password — every other authenticated
+# endpoint answers 403 until they do.
+PASSWORD_CHANGE_ALLOWED_PATHS = ("/api/auth/me", "/api/auth/change-password")
+
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_BYTES = 72  # bcrypt limit
+
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -26,7 +34,21 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(subject: str, role: str, expires_minutes: int | None = None) -> str:
+def password_policy_error(password: str) -> str | None:
+    """Return a human-readable policy violation, or None when acceptable."""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        return "Password is too long (maximum 72 bytes)."
+    return None
+
+
+def create_access_token(
+    subject: str,
+    role: str,
+    expires_minutes: int | None = None,
+    token_version: int = 0,
+) -> str:
     """Issue a signed JWT for a local-auth user."""
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES
@@ -35,6 +57,7 @@ def create_access_token(subject: str, role: str, expires_minutes: int | None = N
         "sub": subject,          # user id
         "role": role,
         "iss": "mineguardai",    # distinguishes local tokens from Supabase ones
+        "tv": int(token_version or 0),  # session generation (see User.token_version)
         "exp": expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -54,6 +77,7 @@ def decode_token(token: str) -> dict:
 # FastAPI dependencies
 # --------------------------------------------------------------------------
 def get_current_user(
+    request: Request,
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
@@ -77,9 +101,27 @@ def get_current_user(
         raise credentials_error
 
     # Supabase tokens carry no `iss=mineguardai`; resolve by supabase_user_id.
-    if issuer == "mineguardai" and payload.get("role") != user.role:
-        # Role changed since token issue: force re-login.
-        raise credentials_error
+    if issuer == "mineguardai":
+        if payload.get("role") != user.role:
+            # Role changed since token issue: force re-login.
+            raise credentials_error
+        # Session generation check: a password reset/change or a deactivation
+        # increments the stored version, invalidating every older token.
+        # Tokens minted before this feature carry no `tv` and map to 0, which
+        # matches the column default, so a deploy does not log anyone out.
+        if int(payload.get("tv", 0) or 0) != int(user.token_version or 0):
+            raise credentials_error
+        if user.must_change_password and not request.url.path.startswith(
+            PASSWORD_CHANGE_ALLOWED_PATHS
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Password change required: this account is using a temporary "
+                    "password. Set a new password to continue."
+                ),
+                headers={"X-Password-Change-Required": "true"},
+            )
     return user
 
 
@@ -88,13 +130,20 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 class RoleChecker:
-    """Dependency that restricts an endpoint to the given roles (admin always allowed)."""
+    """Dependency that restricts an endpoint to exactly the given roles.
+
+    There is no implicit superuser: ``admin`` only passes where it is named
+    explicitly (see ``app/core/roles.py``). This keeps platform administration
+    separate from mine-safety operations, so an administrator cannot submit
+    inspections, resolve alerts, close corrective actions or edit emergency
+    records by accident.
+    """
 
     def __init__(self, allowed_roles: list[str]):
         self.allowed_roles = set(allowed_roles)
 
     def __call__(self, user: CurrentUser) -> User:
-        if user.role == "admin" or user.role in self.allowed_roles:
+        if user.role in self.allowed_roles:
             return user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

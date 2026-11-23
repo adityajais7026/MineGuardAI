@@ -403,6 +403,19 @@ class SensorDeviceCreate(BaseModel):
     critical_threshold: float | None = None
 
 
+class SensorDeviceUpdate(BaseModel):
+    """Partial update for a registered sensor device (admin/infrastructure)."""
+
+    mine_id: str | None = None
+    device_code: str | None = None
+    parameter: str | None = None
+    unit: str | None = None
+    location_text: str | None = None
+    warning_threshold: float | None = None
+    critical_threshold: float | None = None
+    is_active: bool | None = None
+
+
 class SensorDeviceOut(BaseModel):
     id: str
     mine_id: str

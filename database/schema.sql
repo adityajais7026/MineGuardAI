@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS users (
     -- officers only — mine_manager scope comes from mines.manager_id).
     permitted_mine_ids  JSON         NOT NULL DEFAULT '[]'::jsonb,
     is_active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- Temporary-password workflow: set by an Administrator password reset;
+    -- all authenticated calls except /auth/me and /auth/change-password are
+    -- refused until the holder sets their own password.
+    must_change_password BOOLEAN     NOT NULL DEFAULT FALSE,
+    -- Session generation carried in every issued JWT; incrementing it revokes
+    -- all previously issued tokens (password reset/change, deactivation).
+    token_version       INTEGER      NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_users_role

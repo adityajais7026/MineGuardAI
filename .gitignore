@@ -63,3 +63,15 @@ logs/
 npm-debug.log*
 *.tsbuildinfo
 .freebuff/
+.ai-tools/
+
+# --- local verification artifacts (screenshots, smoke reports, chat exports) ---
+# Kept on the developer's machine for review; never part of a release commit.
+artifacts/
+reports/
+.cloud-attachments/
+
+# --- local inference-worker runtime secrets (tunnel URL + bearer token) ---
+ai/inference_worker/.ai_worker_token
+ai/inference_worker/.tunnel_url
+

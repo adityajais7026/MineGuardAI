@@ -500,8 +500,11 @@ def test_otp_endpoints_do_not_leak_secrets(sms_client, otp_capture, mobile):
     r = sms_client.post(f"{BASE}/register/otp/verify", json={"mobile": mobile, "otp": "111111"})
     body = r.text
     assert code not in body                       # real OTP never echoed
-    assert settings.MSG91_AUTHKEY not in body     # authkey never echoed
-    assert settings.MSG91_WIDGET_ID not in body   # widget id never echoed
+    # Only assert configured secrets: an empty string is trivially "in" any
+    # text, so checking it would make this guard vacuous rather than stricter.
+    for secret in (settings.MSG91_AUTHKEY, settings.MSG91_WIDGET_ID):
+        if secret:
+            assert secret not in body             # authkey/widget id never echoed
     assert mobile not in body                     # full mobile never echoed
 
 

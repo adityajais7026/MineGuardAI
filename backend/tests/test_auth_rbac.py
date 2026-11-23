@@ -61,18 +61,20 @@ def test_role_mismatch_between_token_and_db_rejected(anon_client):
 # --------------------------------------------------------------------- #
 # Role-based write permissions (positive + negative cases)
 # --------------------------------------------------------------------- #
-def test_admin_can_write_everything(client):
+def test_admin_writes_platform_areas_only(client):
+    """No implicit superuser: platform writes pass, mine-safety writes are 403."""
     assert client.post("/api/mines", json={
         "name": "RBAC Mine", "code": "MINE-RBAC", "mine_type": "open_cast",
         "status": "operational", "location": "X",
     }).status_code == 201
+    # Operational areas belong to the operational roles, not the administrator.
     assert client.post("/api/compliance-rules", json={
         "name": "RBAC rule", "parameter": "rbac", "operator": ">",
         "threshold": 1, "unit": "u",
-    }).status_code == 201
+    }).status_code == 403
     assert client.post("/api/incidents", json={
         "mine_id": "m-test-0001", "title": "RBAC incident",
-    }).status_code == 201
+    }).status_code == 403
 
 
 def test_environmental_officer_manages_rules_but_not_mines(client, as_role):

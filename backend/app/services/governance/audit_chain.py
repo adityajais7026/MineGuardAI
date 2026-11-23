@@ -17,7 +17,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import AuditEvent
+from app.database.models import AuditEvent, User
 
 GENESIS = "0" * 64
 
@@ -43,7 +43,21 @@ def append_event(
     mine_id: str | None = None,
     payload: dict | None = None,
 ) -> AuditEvent:
-    """Append one event to the chain (commits)."""
+    """Append one event to the chain (commits).
+
+    The payload also carries an ``_actor`` snapshot (email + name). When an
+    account is permanently deleted, its ``actor_id`` foreign key is set to
+    NULL by the database, but the snapshot inside the already-written payload
+    keeps historical actor attribution readable and hash-verified.
+    """
+    if actor_id:
+        actor = db.get(User, actor_id)
+        if actor is not None:
+            payload = {
+                **(payload or {}),
+                "_actor": {"email": actor.email, "full_name": actor.full_name},
+            }
+
     last = db.execute(
         select(AuditEvent).order_by(AuditEvent.seq.desc()).limit(1)
     ).scalar_one_or_none()

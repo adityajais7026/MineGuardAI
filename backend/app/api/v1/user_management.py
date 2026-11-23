@@ -35,6 +35,7 @@ from app.schemas.auth import (
 from app.schemas.common import PaginatedResponse
 from app.services import invitations as invitation_service
 from app.services import user_deletion
+from app.services.governance import audit_chain
 
 router = APIRouter(prefix="/users", tags=["User Management"], dependencies=[Depends(get_current_user)])
 
@@ -192,4 +193,24 @@ def delete_user_permanently(
     The account's email/mobile become available again for registration.
     """
     report = user_deletion.delete_user_permanently(db, target_id=user_id, acting_admin=current)
+
+    # The deletion itself is audited AFTER the row is gone, from the report's
+    # snapshot: the target's identity, role and the detached history survive in
+    # the payload even though the account no longer exists. Sessions end with
+    # the row (get_current_user cannot resolve a deleted id).
+    audit_chain.append_event(
+        db,
+        actor_id=current.id,
+        actor_role=current.role,
+        action="user.delete_permanent",
+        entity_type="user",
+        entity_id=report["user_id"],
+        payload={
+            "email": report["email"],
+            "role": report["role"],
+            "detached": report["detached"],
+            "deleted": report["deleted"],
+            "sessions_revoked": True,
+        },
+    )
     return {"detail": "User permanently deleted.", **report}

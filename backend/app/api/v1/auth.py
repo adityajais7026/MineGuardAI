@@ -36,10 +36,13 @@ from app.core.security import (
     get_current_user,
     get_db,
     hash_password,
+    password_policy_error,
     verify_password,
 )
 from app.database.models import User
+from app.services.governance import audit_chain
 from app.schemas.auth import (
+    ChangePasswordRequest,
     InvitationValidateResponse,
     LoginStartRequest,
     LoginStartResponse,
@@ -71,7 +74,9 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 def _login_response(user: User) -> dict:
     """Same response shape as the classic password login (existing JWT)."""
-    token = create_access_token(subject=user.id, role=user.role)
+    token = create_access_token(
+        subject=user.id, role=user.role, token_version=user.token_version
+    )
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -111,7 +116,9 @@ def login(db: DbSession, form: Annotated[OAuth2PasswordRequestForm, Depends()]):
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
 
-    token = create_access_token(subject=user.id, role=user.role)
+    token = create_access_token(
+        subject=user.id, role=user.role, token_version=user.token_version
+    )
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -291,3 +298,58 @@ def validate_invitation_code(db: DbSession, code: str, email: str):
 def me(user: Annotated[User, Depends(get_current_user)]):
     """Current authenticated user profile."""
     return user
+
+
+@router.post("/change-password")
+def change_password(
+    db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
+    payload: ChangePasswordRequest,
+):
+    """Self-service password change — also the exit from a temporary password.
+
+    Requires the CURRENT password, so possessing a stolen JWT is not enough to
+    take over the account. On success the temporary-password flag clears, a
+    new session generation starts (every older token is invalidated) and the
+    change is appended to the tamper-evident audit chain. The new token is
+    returned so the caller stays signed in.
+    """
+    if user.hashed_password is None or not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The current password is incorrect.",
+        )
+    if payload.new_password == payload.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The new password must be different from the current one.",
+        )
+    policy_error = password_policy_error(payload.new_password)
+    if policy_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy_error)
+
+    user.hashed_password = hash_password(payload.new_password)
+    was_temporary = bool(user.must_change_password)
+    user.must_change_password = False
+    user.token_version = int(user.token_version or 0) + 1
+    db.commit()
+    db.refresh(user)
+
+    audit_chain.append_event(
+        db,
+        actor_id=user.id,
+        actor_role=user.role,
+        action="user.password_change",
+        entity_type="user",
+        entity_id=user.id,
+        payload={"email": user.email, "role": user.role, "from_temporary_password": was_temporary},
+    )
+
+    token = create_access_token(
+        subject=user.id, role=user.role, token_version=user.token_version
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": UserResponse.model_validate(user),
+    }

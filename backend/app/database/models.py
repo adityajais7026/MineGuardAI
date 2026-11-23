@@ -61,6 +61,19 @@ class User(Base):
         JSON, nullable=False, default=list, server_default=text("'[]'")
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Temporary-password workflow: an Administrator password reset sets this
+    # flag. Every authenticated request except /auth/me and
+    # /auth/change-password is refused (HTTP 403) until the user replaces the
+    # temporary password with their own. Cleared by /auth/change-password.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Session generation. Every issued JWT carries the value current at login;
+    # incrementing it (password reset, password change, deactivation) revokes
+    # all previously issued tokens immediately, without a token store.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
 
@@ -910,12 +923,17 @@ class AuditEvent(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     seq: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
-    actor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Deliberately NOT foreign keys. An audit row is hashed and immutable: a
+    # FK with ON DELETE SET NULL would silently rewrite actor_id/mine_id when a
+    # user or mine is deleted, invalidating every later hash in the chain. The
+    # identifiers are plain stored values, so deleting an account or a mine
+    # never mutates the ledger and historical attribution stays intact.
+    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     actor_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
     action: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. inspection.submit, action.complete
     entity_type: Mapped[str] = mapped_column(String(60), nullable=False)
     entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    mine_id: Mapped[str | None] = mapped_column(ForeignKey("mines.id", ondelete="SET NULL"), nullable=True, index=True)
+    mine_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)

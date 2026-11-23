@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { minesApi, usersApi } from '../api/endpoints'
+import { useAuth } from '../context/AuthContext'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
-import type { InvitationCreated, InvitationSummary, Mine, User, UserDeleteImpact } from '../api/types'
+import type { InvitationCreated, InvitationSummary, Mine, PasswordResetResult, User, UserDeleteImpact } from '../api/types'
 import {
   Badge, EmptyState, ErrorState, Loading, Modal, PageHeader,
 } from '../components/ui'
@@ -54,6 +55,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export default function UsersPage() {
+  const { user: currentUser } = useAuth()
   const { data, loading, error, refetch } = useApiResource(() => usersApi.list({ limit: 200 }), [])
   const { data: invitations, refetch: refetchInvitations } = useApiResource(
     () => usersApi.invitations({ limit: 50 }), [],
@@ -86,6 +88,24 @@ export default function UsersPage() {
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null)
+  // Typed confirmation: permanent deletion cannot be triggered by a stray click.
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+
+  // --- Edit user information (name, role, mobile, status, password) -------
+  const [editingUser, setEditingUser] = useState<User | null>(null)
+  const [editForm, setEditForm] = useState({
+    full_name: '', role: 'safety_officer' as User['role'], mobile: '', password: '', is_active: true,
+  })
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editBusy, setEditBusy] = useState(false)
+  const [editSuccess, setEditSuccess] = useState<string | null>(null)
+
+  // --- Administrator password reset (temporary password, shown once) ------
+  const [resetTarget, setResetTarget] = useState<User | null>(null)
+  const [resetResult, setResetResult] = useState<PasswordResetResult | null>(null)
+  const [resetBusy, setResetBusy] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
+  const [resetCopied, setResetCopied] = useState(false)
 
   const [busy, setBusy] = useState(false)
 
@@ -208,6 +228,76 @@ export default function UsersPage() {
     setScopeSelected((cur) => (cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]))
   }
 
+  function openEdit(u: User) {
+    setEditForm({
+      full_name: u.full_name,
+      role: u.role,
+      mobile: u.mobile ?? '',
+      password: '',
+      is_active: u.is_active,
+    })
+    setEditError(null)
+    setEditingUser(u)
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingUser) return
+    setEditError(null)
+    if (!editForm.full_name.trim()) {
+      setEditError('Full name is required.')
+      return
+    }
+    if (editForm.password && editForm.password.length < 8) {
+      setEditError('A new password must be at least 8 characters.')
+      return
+    }
+    setEditBusy(true)
+    try {
+      await usersApi.update(editingUser.id, {
+        full_name: editForm.full_name.trim(),
+        role: editForm.role,
+        is_active: editForm.is_active,
+        mobile: editForm.mobile.trim() || null,
+        ...(editForm.password ? { password: editForm.password } : {}),
+      })
+      setEditingUser(null)
+      setEditSuccess(`User information updated for ${editingUser.full_name}.`)
+      refetch()
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : 'Could not update the user.')
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  function openReset(u: User) {
+    setResetResult(null)
+    setResetError(null)
+    setResetCopied(false)
+    setResetTarget(u)
+  }
+
+  async function handleResetPassword() {
+    if (!resetTarget) return
+    setResetBusy(true)
+    setResetError(null)
+    try {
+      const result = await usersApi.resetPassword(resetTarget.id)
+      setResetResult(result)
+      refetch()
+    } catch (err) {
+      setResetError(err instanceof ApiError ? err.message : 'Could not reset the password.')
+    } finally {
+      setResetBusy(false)
+    }
+  }
+
+  async function handleCopyTemporaryPassword() {
+    if (!resetResult) return
+    setResetCopied(await copyText(resetResult.temporary_password))
+  }
+
   async function handleDeletePermanently() {
     if (!deleteTarget) return
     setBusy(true)
@@ -216,6 +306,7 @@ export default function UsersPage() {
       const report = await usersApi.deletePermanent(deleteTarget.id)
       setDeleteSuccess(report.detail)
       setDeleteTarget(null)
+      setDeleteConfirmText('')
       refetch()
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : 'Deletion failed')
@@ -235,29 +326,33 @@ export default function UsersPage() {
         actions={<button className="btn btn-primary" onClick={() => { setShowInvite(true); setCreatedInvitation(null); setInviteError(null) }}>+ Invite user</button>}
       />
 
-      {deleteSuccess && (
+      {(deleteSuccess || editSuccess) && (
         <div className="card" style={{ borderColor: 'var(--ok, #2e7d32)' }}>
-          <Badge text={deleteSuccess} tone="ok" />
+          <Badge text={deleteSuccess ?? editSuccess ?? ''} tone="ok" />
         </div>
       )}
 
       {(data?.items.length ?? 0) === 0 ? <EmptyState message="No users found." /> : (
         <div className="card">
-          <table className="table">
+          <table className="table table-responsive">
             <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Live mines</th><th /></tr></thead>
             <tbody>
               {data!.items.map((u) => (
                 <tr key={u.id}>
-                  <td>{u.full_name}</td>
-                  <td><code>{u.email}</code></td>
-                  <td><Badge text={ROLE_LABEL[u.role] ?? u.role.replace(/_/g, ' ')} tone="info" /></td>
-                  <td><Badge text={u.is_active ? 'active' : 'deactivated'} tone={u.is_active ? 'ok' : 'danger'} /></td>
-                  <td>
+                  <td data-label="Name">{u.full_name}</td>
+                  <td data-label="Email"><code>{u.email}</code></td>
+                  <td data-label="Role"><Badge text={ROLE_LABEL[u.role] ?? u.role.replace(/_/g, ' ')} tone="info" /></td>
+                  <td data-label="Status"><Badge text={u.is_active ? 'active' : 'deactivated'} tone={u.is_active ? 'ok' : 'danger'} /></td>
+                  <td data-label="Live mines">
                     {u.role === 'admin' ? <span className="muted">all mines</span>
                       : u.role === 'mine_manager' ? <span className="muted">managed mines</span>
                       : <Badge text={String(u.permitted_mine_ids?.length ?? 0)} tone={(u.permitted_mine_ids?.length ?? 0) > 0 ? 'ok' : 'muted'} />}
                   </td>
                   <td className="table-actions">
+                    <button className="btn btn-sm" onClick={() => openEdit(u)}
+                      title="Edit name, role, mobile, status or password">
+                      Edit
+                    </button>
                     {u.role !== 'admin' && (
                       <button className="btn btn-sm" onClick={() => openScopeEditor(u)}
                         title="Choose which mines this user can run live detection in">
@@ -268,9 +363,22 @@ export default function UsersPage() {
                       {u.is_active ? 'Deactivate' : 'Activate'}
                     </button>
                     <button
+                      className="btn btn-sm"
+                      onClick={() => openReset(u)}
+                      disabled={u.id === currentUser?.id}
+                      title={u.id === currentUser?.id
+                        ? 'Change your own password from the Profile page'
+                        : 'Issue a temporary password; the user must change it at next sign-in'}
+                    >
+                      Reset password
+                    </button>
+                    <button
                       className="btn btn-danger btn-sm"
-                      onClick={() => { setDeleteSuccess(null); setDeleteTarget(u) }}
-                      title="Permanently delete this account (cannot be undone)"
+                      onClick={() => { setDeleteSuccess(null); setEditSuccess(null); setDeleteConfirmText(''); setDeleteTarget(u) }}
+                      disabled={u.id === currentUser?.id}
+                      title={u.id === currentUser?.id
+                        ? 'You cannot delete your own account'
+                        : 'Permanently delete this account (cannot be undone)'}
                     >
                       Delete Permanently
                     </button>
@@ -446,6 +554,98 @@ export default function UsersPage() {
         </Modal>
       )}
 
+      {editingUser && (
+        <Modal title={`Edit user — ${editingUser.full_name}`} onClose={() => setEditingUser(null)}>
+          <form onSubmit={handleSaveEdit} className="form-grid">
+            <p className="muted" style={{ marginTop: 0 }}>
+              Account email <code>{editingUser.email}</code> is fixed: it identifies the account and
+              cannot be changed here. Deactivating keeps the account and its audit history.
+            </p>
+            <label>Full name
+              <input value={editForm.full_name} autoFocus
+                onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
+            </label>
+            <label>Role
+              <select value={editForm.role}
+                onChange={(e) => setEditForm({ ...editForm, role: e.target.value as User['role'] })}>
+                {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </label>
+            <label>Mobile (optional, E.164 without +)
+              <input value={editForm.mobile} inputMode="tel" placeholder="e.g. 919876543210"
+                onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} />
+            </label>
+            <label>Account status
+              <select value={editForm.is_active ? 'active' : 'deactivated'}
+                onChange={(e) => setEditForm({ ...editForm, is_active: e.target.value === 'active' })}>
+                <option value="active">active</option>
+                <option value="deactivated">deactivated</option>
+              </select>
+            </label>
+            <label>Temporary password (optional)
+              <input type="password" value={editForm.password} autoComplete="new-password"
+                placeholder="Leave blank to keep the current password"
+                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} />
+            </label>
+            <p className="muted" style={{ margin: 0, fontSize: '.8rem' }}>
+              A password entered here is temporary: the account must choose its own on next
+              sign-in, and every existing session for it is signed out immediately. Both actions
+              are recorded in the audit log.
+            </p>
+            {editError && <div className="form-error" role="alert">{editError}</div>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" type="button" onClick={() => setEditingUser(null)} disabled={editBusy}>Cancel</button>
+              <button className="btn btn-primary" type="submit" disabled={editBusy}>
+                {editBusy ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {resetTarget && (
+        <Modal title={'Reset password — ' + resetTarget.full_name} onClose={() => setResetTarget(null)}>
+          {resetResult ? (
+            <div>
+              <p><Badge text='Temporary password created.' tone='ok' /></p>
+              <p className='muted'>
+                Hand this password to <strong>{resetTarget.full_name}</strong> ({resetTarget.email}) through a
+                channel you trust. It is shown only once and is never stored in readable form. The account must
+                choose a new password at next sign-in; until then every other screen is blocked. All existing
+                sessions for the account were signed out.
+              </p>
+              <code style={{ display: 'block', padding: 8, wordBreak: 'break-all', fontSize: '1.2em' }}>
+                {resetResult.temporary_password}
+              </code>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button className='btn btn-primary' onClick={handleCopyTemporaryPassword}>
+                  {resetCopied ? 'Copied!' : 'Copy temporary password'}
+                </button>
+                <button className='btn' onClick={() => setResetTarget(null)}>Done</button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p>
+                Issue a temporary password for <strong>{resetTarget.full_name}</strong> ({resetTarget.email})?
+              </p>
+              <p className='muted'>
+                The current password stops working immediately, every active session for the account is
+                signed out, and the account must set a new password before it can use the platform again.
+                The reset is recorded in the audit log.
+              </p>
+              {resetError && <div className='form-error' role='alert'>{resetError}</div>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className='btn' onClick={() => setResetTarget(null)} disabled={resetBusy}>Cancel</button>
+                <button className='btn btn-primary' onClick={handleResetPassword} disabled={resetBusy}>
+                  {resetBusy ? 'Resetting…' : 'Reset password'}
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+
       {deleteTarget && (
         <Modal title="Delete Permanently" onClose={() => setDeleteTarget(null)}>
           <p><strong>Are you sure you want to permanently delete this user?<br />This action cannot be undone.</strong></p>
@@ -469,12 +669,25 @@ export default function UsersPage() {
               </ul>
             </div>
           )}
+          <p className="muted" style={{ marginBottom: '.2rem' }}>
+            Records that reference this account (mines they managed, inspections they filed,
+            alerts and actions assigned to them) are kept and de-attributed, so audit history and
+            relationships survive. Deactivating instead keeps everything intact.
+          </p>
+          <label className="confirm-field">
+            <span>Type <code>{deleteTarget.email}</code> to confirm</span>
+            <input value={deleteConfirmText} autoComplete="off" autoCorrect="off" spellCheck={false}
+              onChange={(e) => setDeleteConfirmText(e.target.value)} />
+          </label>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn" onClick={() => setDeleteTarget(null)} disabled={busy}>Cancel</button>
             <button
               className="btn btn-danger"
               onClick={handleDeletePermanently}
-              disabled={busy || deleteLoading || !deleteImpact}
+              disabled={
+                busy || deleteLoading || !deleteImpact
+                || deleteConfirmText.trim().toLowerCase() !== deleteTarget.email.toLowerCase()
+              }
             >
               {busy ? 'Deleting…' : 'Delete Permanently'}
             </button>

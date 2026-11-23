@@ -435,12 +435,25 @@ export function AuditLogPage() {
     () => (isAdmin ? governanceApi.audit({ limit: 200 }) : Promise.resolve([])), [isAdmin])
   const { data: verify } = useApiResource(
     () => (isAdmin ? governanceApi.auditVerify() : Promise.resolve(null)), [isAdmin])
+  const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('')
 
   if (!isAdmin) {
     return <div className="page"><PageHeader title="Audit Log" /><div className="card"><p className="muted">Audit log is restricted to administrators.</p></div></div>
   }
   if (loading) return <div className="page"><PageHeader title="Audit Log" /><Skeleton lines={4} /></div>
   if (error) return <div className="page"><ErrorState message={error} onRetry={refetch} /></div>
+
+  const allEntries = (data as AuditEvent[] | undefined) ?? []
+  const actorRoles = [...new Set(allEntries.map((e) => e.actor_role).filter(Boolean))] as string[]
+  const needle = query.trim().toLowerCase()
+  const entries = allEntries.filter((e) => {
+    if (roleFilter && e.actor_role !== roleFilter) return false
+    if (!needle) return true
+    return [e.action, e.entity_type, e.entity_id ?? '', e.actor_role ?? '', e.mine_id ?? ''].some(
+      (field) => field.toLowerCase().includes(needle),
+    )
+  })
 
   return (
     <div className="page">
@@ -459,14 +472,28 @@ export function AuditLogPage() {
           Each entry's hash includes the previous entry's hash. Changing any past record breaks
           every later hash, which the verification badge detects. (A hash chain — not a blockchain.)
         </p>
-        {(data as AuditEvent[] | undefined ?? []).length === 0
+        <div className="filter-bar" style={{ marginBottom: '.7rem' }}>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search action, resource, actor or mine ID"
+            aria-label="Search audit entries"
+            style={{ minWidth: 260 }}
+          />
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} aria-label="Filter by actor role">
+            <option value="">All actor roles</option>
+            {actorRoles.map((role) => <option key={role} value={role}>{role}</option>)}
+          </select>
+          <span className="muted">{entries.length} of {allEntries.length} entries</span>
+        </div>
+        {entries.length === 0
           ? <EmptyState title="No events" message="No audit events recorded yet. Actions such as inspections, evidence uploads and approvals append to the chain."
           />
           : (
             <table className="table">
               <thead><tr><th>#</th><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Hash</th></tr></thead>
               <tbody>
-                {(data as AuditEvent[]).map((e) => (
+                {entries.map((e) => (
                   <tr key={e.id}>
                     <td className="num muted">{e.seq}</td>
                     <td><small>{new Date(e.created_at).toLocaleString()}</small></td>

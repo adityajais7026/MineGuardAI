@@ -62,4 +62,22 @@ class UserResponse(UserBase):
     # Mines this user may run live detection in (officers only; see
     # services/mine_access.py). Read-only surface for the admin UI.
     permitted_mine_ids: list[str] = []
+    # True while the account holds an administrator-issued temporary password.
+    # The UI must force a password change before anything else is usable.
+    must_change_password: bool = False
     # hashed_password is intentionally never exposed.
+
+
+class PasswordResetResponse(BaseModel):
+    """Result of an administrator password reset.
+
+    `temporary_password` is returned exactly once (in this response) so the
+    administrator can hand it to the account holder out of band. It is never
+    stored in plaintext, never written to the audit payload and never logged.
+    """
+
+    user_id: str
+    email: str
+    temporary_password: str
+    must_change_password: bool = True
+    sessions_revoked: bool = True

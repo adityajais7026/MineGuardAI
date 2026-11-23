@@ -34,8 +34,13 @@ needs_yolo_mode = pytest.mark.skipif(
 
 
 @pytest.fixture()
-def yolo_client(client, db_session):
-    """Fresh mines per test for alert-dedupe isolation, YOLO env forced on."""
+def yolo_client(client, as_role, db_session):
+    """Act as the Safety Officer — the role that owns detection writes.
+
+    Administrators are refused on camera/AI write paths by design, so these
+    endpoint tests authenticate as the operational role instead.
+    """
+    as_role("u-safe-0001")
     return client
 
 
@@ -43,11 +48,27 @@ def _auth_headers():
     return {}
 
 
-def _make_mine(client, code: str) -> str:
-    return client.post("/api/mines", json={
-        "name": f"YOLO Mine {code}", "code": code, "mine_type": "open_cast",
-        "status": "operational", "location": "Test",
-    }).json()["id"]
+def _make_mine(db_session, code: str) -> str:
+    """Create a mine and grant the Safety Officer access.
+
+    Mine registration is platform administration (admin/mine_manager) while
+    detection is operational (safety_officer), so the row is built directly in
+    the database instead of through a client whose role cannot do both.
+    """
+    from uuid import uuid4
+
+    from app.database import models
+
+    mine = models.Mine(
+        id=str(uuid4()), name=f"YOLO Mine {code}", code=code,
+        mine_type="open_cast", status="operational", location="Test",
+    )
+    db_session.add(mine)
+    db_session.commit()
+    officer = db_session.get(models.User, "u-safe-0001")
+    officer.permitted_mine_ids = sorted(set(list(officer.permitted_mine_ids or []) + [mine.id]))
+    db_session.commit()
+    return mine.id
 
 
 # ------------------------------------------------------------------ #
@@ -61,44 +82,44 @@ def test_detect_endpoints_require_auth(anon_client):
 
 
 @needs_yolo_mode
-def test_image_rejects_wrong_declared_type(client):
-    r = client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
+def test_image_rejects_wrong_declared_type(yolo_client):
+    r = yolo_client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
                     files={"upload": ("doc.txt", b"hello", "text/plain")})
     assert r.status_code == 415
 
 
 @needs_yolo_mode
-def test_image_rejects_forged_content(client):
+def test_image_rejects_forged_content(yolo_client):
     """A .png declared as image/png but carrying text bytes must fail the
     magic-byte check — content type is never trusted."""
-    r = client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
+    r = yolo_client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
                     files={"upload": ("fake.png", b"not-an-image" * 20, "image/png")})
     assert r.status_code == 415
 
 
 @needs_yolo_mode
-def test_image_rejects_unknown_mine(client):
-    r = client.post("/api/ai/detect/image", params={"mine_id": "ghost"},
+def test_image_rejects_unknown_mine(yolo_client):
+    r = yolo_client.post("/api/ai/detect/image", params={"mine_id": "ghost"},
                     files={"upload": ("x.png", b"\x89PNG\r\n\x1a\n" + b"0" * 100, "image/png")})
     assert r.status_code == 400
 
 
 @needs_yolo_mode
-def test_video_rejects_wrong_declared_type(client):
-    r = client.post("/api/ai/detect/video", params={"mine_id": "m-test-0001"},
+def test_video_rejects_wrong_declared_type(yolo_client):
+    r = yolo_client.post("/api/ai/detect/video", params={"mine_id": "m-test-0001"},
                     files={"upload": ("clip.mp4", b"00" * 100, "video/mp4")})
     # Declared type ok, but the payload is not a real MP4 -> magic-byte 415.
     # (Failing earlier at 415 declared-type would also be acceptable.)
     assert r.status_code in (415, 400)
 
 
-def test_yolo_disabled_returns_503_when_detector_simulated(client):
+def test_yolo_disabled_returns_503_when_detector_simulated(yolo_client):
     """The upload endpoints must NOT silently run simulated detection."""
     from app.core.config import settings
 
     if settings.AI_DETECTOR == "yolo" and MODEL_EXISTS:
         pytest.skip("environment configured for real YOLO")
-    r = client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
+    r = yolo_client.post("/api/ai/detect/image", params={"mine_id": "m-test-0001"},
                     files={"upload": ("x.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
     assert r.status_code == 503
     assert "AI_DETECTOR" in r.json()["detail"]
@@ -120,11 +141,11 @@ def test_detector_info_reports_real_yolo(client):
 
 
 @needs_yolo_mode
-def test_real_image_inference_creates_events(client):
+def test_real_image_inference_creates_events(yolo_client, db_session):
     """Real PPE-model inference: every reported class must be a genuine model
     class, and a NO-Safety Vest detection must become a violation event."""
-    mine_id = _make_mine(client, "MINE-YOLO1")
-    r = client.post("/api/ai/detect/image",
+    mine_id = _make_mine(db_session, "MINE-YOLO1")
+    r = yolo_client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "confidence": 0.4},
                     files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r.status_code == 200, r.text
@@ -156,16 +177,16 @@ def test_real_image_inference_creates_events(client):
 
     # Events persisted with detection_source='yolo'
     for eid in body["camera_event_ids"]:
-        r2 = client.get(f"/api/camera-events/{eid}")
+        r2 = yolo_client.get(f"/api/camera-events/{eid}")
         assert r2.status_code == 200
         assert r2.json()["detection_source"] == "yolo"
 
 
 @needs_yolo_mode
-def test_worn_ppe_creates_compliance_event_without_alert(client):
+def test_worn_ppe_creates_compliance_event_without_alert(yolo_client, db_session):
     """Worn PPE (Hardhat/Safety Vest) is recorded as compliance — never alerted."""
-    mine_id = _make_mine(client, "MINE-PPEC")
-    r = client.post("/api/ai/detect/image",
+    mine_id = _make_mine(db_session, "MINE-PPEC")
+    r = yolo_client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "confidence": 0.4},
                     files={"upload": ("ppe_hardhats_vests.jpg", PPE_COMPLIANT.read_bytes(), "image/jpeg")})
     assert r.status_code == 200, r.text
@@ -178,16 +199,16 @@ def test_worn_ppe_creates_compliance_event_without_alert(client):
 
 
 @needs_yolo_mode
-def test_zone_bound_image_raises_yolo_alert(client):
+def test_zone_bound_image_raises_yolo_alert(yolo_client, db_session):
     """A real NO-Safety Vest violation in a zone-bound upload -> alert with
     source='yolo' (never simulated). Zone rules fire only if the model also
     detects Person/vehicle classes in the frame."""
-    mine_id = _make_mine(client, "MINE-YOLO2")
-    zone = client.post("/api/restricted-zones", json={
+    mine_id = _make_mine(db_session, "MINE-YOLO2")
+    zone = yolo_client.post("/api/restricted-zones", json={
         "mine_id": mine_id, "name": "Blast Zone YOLO", "camera_id": "CAM-YOLO",
     }).json()
 
-    r = client.post("/api/ai/detect/image",
+    r = yolo_client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
                     files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r.status_code == 200
@@ -197,23 +218,23 @@ def test_zone_bound_image_raises_yolo_alert(client):
     assert body["alerts"], "expected at least one yolo alert"
     for a in body["alerts"]:
         assert a["source"] == "yolo"
-        alert = client.get(f"/api/alerts/{a['id']}").json()
+        alert = yolo_client.get(f"/api/alerts/{a['id']}").json()
         assert alert["source"] == "yolo"
         assert "Real YOLO" in alert["description"]
 
 
 @needs_yolo_mode
-def test_duplicate_alert_suppression_for_yolo(client):
+def test_duplicate_alert_suppression_for_yolo(yolo_client, db_session):
     """Second identical violation within the cooldown must NOT raise a new alert."""
-    mine_id = _make_mine(client, "MINE-YOLO3")
-    zone = client.post("/api/restricted-zones", json={
+    mine_id = _make_mine(db_session, "MINE-YOLO3")
+    zone = yolo_client.post("/api/restricted-zones", json={
         "mine_id": mine_id, "name": "Zone Dup", "camera_id": "CAM-DUP",
     }).json()
 
-    r1 = client.post("/api/ai/detect/image",
+    r1 = yolo_client.post("/api/ai/detect/image",
                      params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
                      files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
-    r2 = client.post("/api/ai/detect/image",
+    r2 = yolo_client.post("/api/ai/detect/image",
                      params={"mine_id": mine_id, "zone_id": zone["id"], "confidence": 0.4},
                      files={"upload": ("ppe_no_vest.jpg", PPE_NO_VEST.read_bytes(), "image/jpeg")})
     assert r1.status_code == 200 and r2.status_code == 200
@@ -224,13 +245,13 @@ def test_duplicate_alert_suppression_for_yolo(client):
 
 
 @needs_yolo_mode
-def test_video_inference_end_to_end(client):
-    mine_id = _make_mine(client, "MINE-YOLO4")
-    zone = client.post("/api/restricted-zones", json={
+def test_video_inference_end_to_end(yolo_client, db_session):
+    mine_id = _make_mine(db_session, "MINE-YOLO4")
+    zone = yolo_client.post("/api/restricted-zones", json={
         "mine_id": mine_id, "name": "Zone Vid", "camera_id": "CAM-VID",
     }).json()
 
-    r = client.post("/api/ai/detect/video",
+    r = yolo_client.post("/api/ai/detect/video",
                     params={"mine_id": mine_id, "zone_id": zone["id"],
                             "confidence": 0.4, "frame_stride": 5},
                     files={"upload": ("ppe_video.mp4", PPE_VIDEO.read_bytes(), "video/mp4")})
@@ -252,10 +273,10 @@ def test_video_inference_end_to_end(client):
 
 
 @needs_yolo_mode
-def test_annotated_media_files_are_real(client):
+def test_annotated_media_files_are_real(yolo_client, db_session):
     """Annotated output must be decodable media, not empty bytes (YOLO mode)."""
-    mine_id = _make_mine(client, "MINE-YOLO5")
-    r = client.post("/api/ai/detect/image",
+    mine_id = _make_mine(db_session, "MINE-YOLO5")
+    r = yolo_client.post("/api/ai/detect/image",
                     params={"mine_id": mine_id, "confidence": 0.4},
                     files={"upload": ("bus.jpg", FIXTURE_IMAGE.read_bytes(), "image/jpeg")})
     body = r.json()
@@ -297,8 +318,8 @@ def test_build_media_path_is_safe():
 # ------------------------------------------------------------------ #
 # Simulated detector still works (regression)
 # ------------------------------------------------------------------ #
-def test_simulated_events_still_work(client):
-    r = client.post("/api/ai/simulate-event", params={"mine_id": "m-test-0001"})
+def test_simulated_events_still_work(yolo_client):
+    r = yolo_client.post("/api/ai/simulate-event", params={"mine_id": "m-test-0001"})
     assert r.status_code == 201
     body = r.json()
     assert body["event"]["detection_source"] == "simulated"

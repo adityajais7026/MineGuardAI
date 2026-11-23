@@ -84,6 +84,18 @@ def scan_user_impact(db: Session, user: User) -> dict:
     }
 
 
+def other_active_admin_count(db: Session, *, exclude_id: str) -> int:
+    """Number of active Administrators other than `exclude_id`."""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == "admin", User.id != exclude_id, User.is_active.is_(True))
+        )
+        or 0
+    )
+
+
 def _assert_deletable(db: Session, target: User, acting_admin: User) -> None:
     # Guard order: self-deletion is rejected first — it is the most personal,
     # always-true rule (an Administrator can never delete themselves).
@@ -93,15 +105,7 @@ def _assert_deletable(db: Session, target: User, acting_admin: User) -> None:
             detail="You cannot delete your own account.",
         )
     if target.role == "admin":
-        other_active_admins = (
-            db.scalar(
-                select(func.count())
-                .select_from(User)
-                .where(User.role == "admin", User.id != target.id, User.is_active.is_(True))
-            )
-            or 0
-        )
-        if other_active_admins == 0:
+        if other_active_admin_count(db, exclude_id=target.id) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot delete the last active Administrator. Invite another Administrator first.",

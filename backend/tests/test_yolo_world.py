@@ -200,6 +200,13 @@ def test_resolver_dispatch(monkeypatch):
     assert isinstance(resolve_media_detector(), YoloWorldDetector)
 
 
+@pytest.fixture()
+def world_client(client, as_role):
+    """Act as the Safety Officer: camera/AI writes are refused for admins."""
+    as_role("u-safe-0001")
+    return client
+
+
 def test_detector_probe_reports_world_backend(client, monkeypatch):
     """GET /api/ai/detector lists yolo_world honestly (even when unavailable)."""
     r = client.get("/api/ai/detector")
@@ -240,7 +247,7 @@ def test_boxes_preserve_raw_class_ids():
 # --------------------------------------------------------------------- #
 # 2, 8. Class verification on load + ByteTrack through detect() (stubs)
 # --------------------------------------------------------------------- #
-def test_load_rejects_wrong_class_inventory(monkeypatch):
+def test_load_rejects_wrong_class_inventory(monkeypatch, tmp_path):
     """A model without the exact six classes is refused — never remapped."""
     import sys
     import types
@@ -251,7 +258,12 @@ def test_load_rejects_wrong_class_inventory(monkeypatch):
     fake_mod.YOLO = lambda _p: wrong
     monkeypatch.setitem(sys.modules, "ultralytics", fake_mod)
 
-    det = YoloWorldDetector(str(WORLD_WEIGHTS))
+    # The unit test does not need the real weights: YOLO() is faked above. A
+    # placeholder file only satisfies the detector's existence check, which is
+    # what lets the class-inventory validation actually run here.
+    placeholder = tmp_path / "placeholder_world.pt"
+    placeholder.write_bytes(b"placeholder")
+    det = YoloWorldDetector(str(placeholder))
     with pytest.raises(YoloWorldNotConfiguredError, match="class check failed"):
         det._load_model()
 
@@ -296,12 +308,12 @@ def test_detect_multiple_people_distinct_ids():
 # --------------------------------------------------------------------- #
 # 12, 7. Live endpoint through the shared flow (stub model)
 # --------------------------------------------------------------------- #
-def test_live_frame_stub_multiple_persons_and_absence_honesty(client, monkeypatch):
+def test_live_frame_stub_multiple_persons_and_absence_honesty(world_client, monkeypatch):
     """Two persons, PPE on one only: per-person statuses, UNDETERMINED for the
     bare person, zero alerts (absence is never a violation). Compliance
     findings still flow through the UNCHANGED event pipeline."""
     for det in _stub_world(monkeypatch):
-        r = client.post(
+        r = world_client.post(
             "/api/ai/detect/frame", json=_frame_payload(session="world-multi")
         )
     assert r.status_code == 200
@@ -324,10 +336,10 @@ def test_live_frame_stub_multiple_persons_and_absence_honesty(client, monkeypatc
     assert "inference_ms" in body["timings"]
 
 
-def test_live_frame_rejects_bad_frames_under_world(client, monkeypatch):
+def test_live_frame_rejects_bad_frames_under_world(world_client, monkeypatch):
     """Validation still fires before any model work under yolo_world."""
     for _det in _stub_world(monkeypatch, boxes=[]):
-        r = client.post(
+        r = world_client.post(
             "/api/ai/detect/frame",
             json={**_frame_payload(), "image_base64": "!!!!" * 10},
         )
@@ -378,11 +390,11 @@ def test_image_endpoint_uses_world_backend(world_endpoints):
     client = world_endpoints  # fixture yields the detector; client is separate
 
 
-def test_video_endpoint_uses_world_backend(client, monkeypatch):
+def test_video_endpoint_uses_world_backend(world_client, monkeypatch):
     if not FIXTURE_VIDEO.exists():
         pytest.skip("test_video.mp4 fixture missing")
     for _det in _stub_world(monkeypatch):
-        r = client.post(
+        r = world_client.post(
             "/api/ai/detect/video",
             params={"mine_id": "m-test-0001", "frame_stride": 5},
             files={"upload": ("v.mp4", FIXTURE_VIDEO.read_bytes(), "video/mp4")},
@@ -394,11 +406,11 @@ def test_video_endpoint_uses_world_backend(client, monkeypatch):
     assert body["detection_count"] >= 1
 
 
-def test_image_endpoint_uses_world_backend_real(client, monkeypatch):
+def test_image_endpoint_uses_world_backend_real(world_client, monkeypatch):
     if not FIXTURE_BUS.exists():
         pytest.skip("bus.jpg fixture missing")
     for _det in _stub_world(monkeypatch):
-        r = client.post(
+        r = world_client.post(
             "/api/ai/detect/image",
             params={"mine_id": "m-test-0001"},
             files={"upload": ("bus.jpg", FIXTURE_BUS.read_bytes(), "image/jpeg")},

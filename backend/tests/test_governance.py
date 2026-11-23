@@ -21,7 +21,7 @@ from app.services.governance import ai_adapters, audit_chain, geofence as geofen
 # ---------------------------------------------------------------------------
 
 
-def _mk_template(client, name=None, items=None):
+def _mk_template(ops_client, name=None, items=None):
     payload = {
         "name": name or f"T-{uuid.uuid4().hex[:8]}",
         "inspection_type": "safety",
@@ -31,13 +31,13 @@ def _mk_template(client, name=None, items=None):
             {"label": "Fire extinguishers", "category": "fire", "severity_weight": 6},
         ],
     }
-    resp = client.post("/api/governance/inspection-templates", json=payload)
+    resp = ops_client.post("/api/governance/inspection-templates", json=payload)
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
 def _mk_template_officer(client_env):
-    """safety officer context client (overridden in tests via dependency)."""
+    """safety officer context ops_client (overridden in tests via dependency)."""
     raise NotImplementedError
 
 
@@ -46,12 +46,12 @@ def _mk_template_officer(client_env):
 # ---------------------------------------------------------------------------
 
 
-def test_template_crud(client):
-    t = _mk_template(client)
+def test_template_crud(ops_client):
+    t = _mk_template(ops_client)
     assert t["regulatory_reference"] == "Internal SOP 7.1"
     assert len(t["items"]) == 2
 
-    listed = client.get("/api/governance/inspection-templates").json()
+    listed = ops_client.get("/api/governance/inspection-templates").json()
     assert any(x["id"] == t["id"] for x in listed)
 
 
@@ -60,10 +60,10 @@ def test_template_crud(client):
 # ---------------------------------------------------------------------------
 
 
-def test_inspection_full_workflow(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    t = _mk_template(client)
-    start = client.post("/api/governance/inspections/from-template", json={
+def test_inspection_full_workflow(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    t = _mk_template(ops_client)
+    start = ops_client.post("/api/governance/inspections/from-template", json={
         "mine_id": mine["id"], "template_id": t["id"],
     })
     assert start.status_code == 201, start.text
@@ -80,38 +80,38 @@ def test_inspection_full_workflow(client):
         checklist[0]["id"]: {"result": "pass", "comment": "ok"},
         checklist[1]["id"]: {"result": "unknown", "comment": "could not verify"},
     }
-    put = client.put(f"/api/governance/inspections/{insp_id}/checklist",
+    put = ops_client.put(f"/api/governance/inspections/{insp_id}/checklist",
                      json={"results": results})
     assert put.status_code == 200
     assert {i["result"] for i in put.json()} == {"pass", "unknown"}
 
-    sub = client.post(f"/api/governance/inspections/{insp_id}/submit")
+    sub = ops_client.post(f"/api/governance/inspections/{insp_id}/submit")
     assert sub.status_code == 200
     # unknown (with no fail) -> pending, NOT compliant (no fabricated compliance)
     assert sub.json()["compliance_result"] == "pending"
 
 
-def test_checklist_rejects_foreign_item(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    t1 = _mk_template(client)
-    t2 = _mk_template(client)
-    i1 = client.post("/api/governance/inspections/from-template",
+def test_checklist_rejects_foreign_item(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    t1 = _mk_template(ops_client)
+    t2 = _mk_template(ops_client)
+    i1 = ops_client.post("/api/governance/inspections/from-template",
                      json={"mine_id": mine["id"], "template_id": t1["id"]}).json()
-    i2 = client.post("/api/governance/inspections/from-template",
+    i2 = ops_client.post("/api/governance/inspections/from-template",
                      json={"mine_id": mine["id"], "template_id": t2["id"]}).json()
     foreign = i2["checklist"][0]["id"]
-    resp = client.put(f"/api/governance/inspections/{i1['inspection_id']}/checklist",
+    resp = ops_client.put(f"/api/governance/inspections/{i1['inspection_id']}/checklist",
                       json={"results": {foreign: {"result": "pass"}}})
     assert resp.status_code == 422
 
 
-def test_checklist_rejects_invalid_result(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    t = _mk_template(client)
-    i = client.post("/api/governance/inspections/from-template",
+def test_checklist_rejects_invalid_result(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    t = _mk_template(ops_client)
+    i = ops_client.post("/api/governance/inspections/from-template",
                     json={"mine_id": mine["id"], "template_id": t["id"]}).json()
     item = i["checklist"][0]["id"]
-    resp = client.put(f"/api/governance/inspections/{i['inspection_id']}/checklist",
+    resp = ops_client.put(f"/api/governance/inspections/{i['inspection_id']}/checklist",
                       json={"results": {item: {"result": "maybe"}}})
     assert resp.status_code == 422
 
@@ -138,24 +138,24 @@ def test_rollup_rules():
 # ---------------------------------------------------------------------------
 
 
-def test_geofence_radius_verification(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    gf = client.post("/api/governance/geofences", json={
+def test_geofence_radius_verification(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    gf = ops_client.post("/api/governance/geofences", json={
         "mine_id": mine["id"], "name": "pit-1", "boundary_type": "radius",
         "center_lat": 23.0, "center_lng": 86.0, "radius_m": 500,
     })
     assert gf.status_code == 201, gf.text
 
-    inside = client.post("/api/governance/geofences/verify-location",
+    inside = ops_client.post("/api/governance/geofences/verify-location",
                          json={"mine_id": mine["id"], "latitude": 23.001, "longitude": 86.0})
     assert inside.json()["status"] == "inside"
 
-    outside = client.post("/api/governance/geofences/verify-location",
+    outside = ops_client.post("/api/governance/geofences/verify-location",
                           json={"mine_id": mine["id"], "latitude": 24.5, "longitude": 86.0})
     assert outside.json()["status"] == "outside"
 
     # No fabricated GPS: missing coords -> unavailable, never inside.
-    missing = client.post("/api/governance/geofences/verify-location",
+    missing = ops_client.post("/api/governance/geofences/verify-location",
                           json={"mine_id": mine["id"]})
     assert missing.json()["status"] == "unavailable"
 
@@ -173,9 +173,9 @@ def test_haversine_sanity():
 # ---------------------------------------------------------------------------
 
 
-def test_risk_score_explainable(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    resp = client.get(f"/api/governance/risk/{mine['id']}")
+def test_risk_score_explainable(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    resp = ops_client.get(f"/api/governance/risk/{mine['id']}")
     assert resp.status_code == 200
     body = resp.json()
     assert 0 <= body["score"] <= 100
@@ -190,7 +190,7 @@ def test_risk_score_explainable(client):
 # ---------------------------------------------------------------------------
 
 
-def test_audit_chain_append_and_verify(client, db_session):
+def test_audit_chain_append_and_verify(ops_client, db_session):
     rep = audit_chain.verify_chain(db_session)
     assert rep["valid"] is True
     n0 = rep["entries"]
@@ -226,9 +226,10 @@ def test_audit_chain_detects_tamper(db_session):
     assert rep["broken_at_seq"] == ev.seq
 
 
-def test_audit_admin_only(client):
-    assert client.get("/api/governance/audit").status_code == 200
-    assert client.get("/api/governance/audit/verify").status_code == 200
+def test_audit_admin_only(ops_client, as_role):
+    as_role("u-admin-0001")  # the audit log is an administrator-only read
+    assert ops_client.get("/api/governance/audit").status_code == 200
+    assert ops_client.get("/api/governance/audit/verify").status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +237,9 @@ def test_audit_admin_only(client):
 # ---------------------------------------------------------------------------
 
 
-def test_sync_idempotent(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    t = _mk_template(client)
+def test_sync_idempotent(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    t = _mk_template(ops_client)
     guid = uuid.uuid4().hex
     payload = {
         "client_guid": guid, "mine_id": mine["id"], "entity_type": "inspection",
@@ -247,27 +248,27 @@ def test_sync_idempotent(client):
             "results": {"0": {"result": "pass"}, "1": {"result": "fail"}},
         },
     }
-    r1 = client.post("/api/governance/sync", json=payload)
+    r1 = ops_client.post("/api/governance/sync", json=payload)
     assert r1.status_code == 200 and r1.json()["status"] == "synced"
     ref1 = r1.json()["result_ref_id"]
 
     # Replayed push with the SAME guid -> duplicate, same ref, no new inspection
-    r2 = client.post("/api/governance/sync", json=payload)
+    r2 = ops_client.post("/api/governance/sync", json=payload)
     assert r2.json()["status"] == "duplicate"
     assert r2.json()["result_ref_id"] == ref1
 
 
-def test_sync_failed_payload_is_recorded_not_lost(client):
-    mine = client.get("/api/mines").json()["items"][0]
+def test_sync_failed_payload_is_recorded_not_lost(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
     guid = uuid.uuid4().hex
     payload = {
         "client_guid": guid, "mine_id": mine["id"], "entity_type": "inspection",
         "payload": {"mine_id": mine["id"], "template_id": "no-such-template"},
     }
-    r = client.post("/api/governance/sync", json=payload)
+    r = ops_client.post("/api/governance/sync", json=payload)
     assert r.json()["status"] == "failed"
     assert r.json()["error"]
-    q = client.get("/api/governance/sync/queue?status=failed").json()
+    q = ops_client.get("/api/governance/sync/queue?status=failed").json()
     assert any(x["client_guid"] == guid for x in q)
 
 
@@ -276,9 +277,9 @@ def test_sync_failed_payload_is_recorded_not_lost(client):
 # ---------------------------------------------------------------------------
 
 
-def test_worker_shift_attendance(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    w = client.post("/api/governance/workers", json={
+def test_worker_shift_attendance(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    w = ops_client.post("/api/governance/workers", json={
         "mine_id": mine["id"], "employee_code": f"EMP-{uuid.uuid4().hex[:6]}",
         "full_name": "Test Worker",
     })
@@ -287,12 +288,12 @@ def test_worker_shift_attendance(client):
 
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
-    s = client.post("/api/governance/shifts", json={
+    s = ops_client.post("/api/governance/shifts", json={
         "mine_id": mine["id"], "name": "A",
         "starts_at": now.isoformat(), "ends_at": (now + timedelta(hours=8)).isoformat(),
     })
     assert s.status_code == 201
-    a = client.post("/api/governance/shifts/attendance", json={
+    a = ops_client.post("/api/governance/shifts/attendance", json={
         "worker_id": wid, "mine_id": mine["id"], "shift_id": s.json()["id"],
         "check_in_at": now.isoformat(), "verification": "manual",
     })
@@ -304,20 +305,20 @@ def test_worker_shift_attendance(client):
 # ---------------------------------------------------------------------------
 
 
-def test_contractor_document_lifecycle(client):
-    c = client.post("/api/governance/contractors", json={"name": "ACME Mining"})
+def test_contractor_document_lifecycle(ops_client):
+    c = ops_client.post("/api/governance/contractors", json={"name": "ACME Mining"})
     assert c.status_code == 201
-    d = client.post("/api/governance/contractors/documents", json={
+    d = ops_client.post("/api/governance/contractors/documents", json={
         "contractor_id": c.json()["id"], "doc_type": "training_certificate",
         "title": "Safety training 2026", "document_ref": "docs/t1.pdf",
     })
     assert d.status_code == 201
     assert d.json()["verification_status"] == "pending_verification"
     doc_id = d.json()["id"]
-    v = client.post(f"/api/governance/contractors/documents/{doc_id}/verify",
+    v = ops_client.post(f"/api/governance/contractors/documents/{doc_id}/verify",
                     json={"verification_status": "valid"})
     assert v.json()["verification_status"] == "valid"
-    bad = client.post(f"/api/governance/contractors/documents/{doc_id}/verify",
+    bad = ops_client.post(f"/api/governance/contractors/documents/{doc_id}/verify",
                       json={"verification_status": "totally legit"})
     assert bad.status_code == 422
 
@@ -327,23 +328,23 @@ def test_contractor_document_lifecycle(client):
 # ---------------------------------------------------------------------------
 
 
-def test_emergency_creates_notifications(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    e = client.post("/api/governance/emergencies", json={
+def test_emergency_creates_notifications(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    e = ops_client.post("/api/governance/emergencies", json={
         "mine_id": mine["id"], "emergency_type": "fire", "severity": "critical",
         "title": "Fire in pit", "description": "Test emergency",
     })
     assert e.status_code == 201
-    bad = client.post("/api/governance/emergencies", json={
+    bad = ops_client.post("/api/governance/emergencies", json={
         "mine_id": mine["id"], "emergency_type": "zombie", "severity": "critical",
         "title": "x",
     })
     assert bad.status_code == 422
 
 
-def test_notifications_scoped_to_user(client):
+def test_notifications_scoped_to_user(ops_client):
     # admin sees only own/global notifications; list must not 500
-    resp = client.get("/api/governance/notifications")
+    resp = ops_client.get("/api/governance/notifications")
     assert resp.status_code == 200
 
 
@@ -352,9 +353,9 @@ def test_notifications_scoped_to_user(client):
 # ---------------------------------------------------------------------------
 
 
-def test_telemetry_demo_device_labeled(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    dev = client.post("/api/governance/telemetry/devices", json={
+def test_telemetry_demo_device_labeled(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    dev = ops_client.post("/api/governance/telemetry/devices", json={
         "mine_id": mine["id"], "device_code": f"CH4-{uuid.uuid4().hex[:6]}",
         "parameter": "methane", "unit": "%LEL", "source": "demo",
         "warning_threshold": 0.5, "critical_threshold": 1.0,
@@ -362,10 +363,10 @@ def test_telemetry_demo_device_labeled(client):
     assert dev.status_code == 201
     assert dev.json()["source"] == "demo"  # UI must label DEMO
     did = dev.json()["id"]
-    r1 = client.post("/api/governance/telemetry/readings",
+    r1 = ops_client.post("/api/governance/telemetry/readings",
                      json={"device_id": did, "value": 0.3})
     assert r1.json()["status"] == "normal"
-    r2 = client.post("/api/governance/telemetry/readings",
+    r2 = ops_client.post("/api/governance/telemetry/readings",
                      json={"device_id": did, "value": 1.4})
     assert r2.json()["status"] == "critical"
 
@@ -375,8 +376,8 @@ def test_telemetry_demo_device_labeled(client):
 # ---------------------------------------------------------------------------
 
 
-def test_ocr_unavailable_not_fabricated(client):
-    resp = client.post("/api/governance/ai/ocr",
+def test_ocr_unavailable_not_fabricated(ops_client):
+    resp = ops_client.post("/api/governance/ai/ocr",
                        json={"data_base64": base64.b64encode(b"fakepng").decode()})
     body = resp.json()
     assert body["status"] == "unavailable"
@@ -384,23 +385,23 @@ def test_ocr_unavailable_not_fabricated(client):
     assert body["text"] is None  # no fabricated text
 
 
-def test_voice_unavailable_not_fabricated(client):
-    resp = client.post("/api/governance/ai/voice",
+def test_voice_unavailable_not_fabricated(ops_client):
+    resp = ops_client.post("/api/governance/ai/voice",
                        json={"data_base64": base64.b64encode(b"fakeaudio12345678").decode()})
     body = resp.json()
     assert body["status"] == "unavailable"
     assert body["text"] is None
 
 
-def test_translation_rejects_unknown_language(client):
-    resp = client.post("/api/governance/ai/translate",
+def test_translation_rejects_unknown_language(ops_client):
+    resp = ops_client.post("/api/governance/ai/translate",
                        json={"text": "hello", "target_language": "xx"})
     assert resp.status_code == 200
     assert resp.json()["status"] in ("error", "unavailable")
 
 
-def test_capabilities_matrix(client):
-    caps = client.get("/api/governance/ai/capabilities").json()
+def test_capabilities_matrix(ops_client):
+    caps = ops_client.get("/api/governance/ai/capabilities").json()
     assert caps["ppe_detection"]["status"] == "LIVE"
     assert caps["ocr"]["status"] == "UNAVAILABLE"  # honest: not connected
     assert caps["risk_analysis"]["status"] == "LIVE"
@@ -411,22 +412,23 @@ def test_capabilities_matrix(client):
 # ---------------------------------------------------------------------------
 
 
-def test_requirement_requires_reference(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    ok = client.post("/api/governance/compliance/requirements", json={
+def test_requirement_requires_reference(ops_client, as_role):
+    as_role("u-env-0001")  # compliance requirements are the government officer's area
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    ok = ops_client.post("/api/governance/compliance/requirements", json={
         "mine_id": mine["id"], "title": "Weekly ventilation check",
         "reference": "Mine SOP 12", "frequency": "weekly",
     })
     assert ok.status_code == 201
-    bad = client.post("/api/governance/compliance/requirements", json={
+    bad = ops_client.post("/api/governance/compliance/requirements", json={
         "mine_id": mine["id"], "title": "No reference", "frequency": "weekly",
     })
     assert bad.status_code == 422  # reference field is required
 
 
-def test_compliance_summary_counts(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    resp = client.get(f"/api/governance/compliance/summary?mine_id={mine['id']}")
+def test_compliance_summary_counts(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    resp = ops_client.get(f"/api/governance/compliance/summary?mine_id={mine['id']}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total_requirements"] == (
@@ -439,23 +441,23 @@ def test_compliance_summary_counts(client):
 # ---------------------------------------------------------------------------
 
 
-def test_pdf_reports(client):
-    mine = client.get("/api/mines").json()["items"][0]
-    t = _mk_template(client)
-    insp = client.post("/api/governance/inspections/from-template",
+def test_pdf_reports(ops_client):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    t = _mk_template(ops_client)
+    insp = ops_client.post("/api/governance/inspections/from-template",
                        json={"mine_id": mine["id"], "template_id": t["id"]}).json()
     insp_id = insp["inspection_id"]
-    client.post(f"/api/governance/inspections/{insp_id}/submit")
+    ops_client.post(f"/api/governance/inspections/{insp_id}/submit")
 
-    r1 = client.get(f"/api/governance/reports/inspection/{insp_id}.pdf")
+    r1 = ops_client.get(f"/api/governance/reports/inspection/{insp_id}.pdf")
     assert r1.status_code == 200
     assert r1.headers["content-type"] == "application/pdf"
     assert r1.content.startswith(b"%PDF")
 
-    r2 = client.get(f"/api/governance/reports/compliance/{mine['id']}.pdf")
+    r2 = ops_client.get(f"/api/governance/reports/compliance/{mine['id']}.pdf")
     assert r2.status_code == 200 and r2.content.startswith(b"%PDF")
 
-    r3 = client.get(f"/api/governance/reports/safety/{mine['id']}.pdf")
+    r3 = ops_client.get(f"/api/governance/reports/safety/{mine['id']}.pdf")
     assert r3.status_code == 200 and r3.content.startswith(b"%PDF")
 
 
@@ -464,7 +466,7 @@ def test_pdf_reports(client):
 # ---------------------------------------------------------------------------
 
 
-def _mk_inspection_for_review(client, db_session, mine):
+def _mk_inspection_for_review(ops_client, db_session, mine):
     """Start an inspection as the safety officer, permitted on `mine`."""
     officer = db_session.get(models.User, "u-safe-0001")
     original_permitted = officer.permitted_mine_ids
@@ -472,18 +474,19 @@ def _mk_inspection_for_review(client, db_session, mine):
     db_session.commit()
     app.dependency_overrides[get_current_user] = lambda: officer
     try:
-        t = _mk_template(client)
-        body = client.post("/api/governance/inspections/from-template",
+        t = _mk_template(ops_client)
+        body = ops_client.post("/api/governance/inspections/from-template",
                            json={"mine_id": mine["id"], "template_id": t["id"]}).json()
         return body["inspection_id"]
     finally:
         officer.permitted_mine_ids = original_permitted
         db_session.commit()
-        app.dependency_overrides[get_current_user] = lambda: db_session.get(models.User, "u-admin-0001")
+        # Restore the operational identity these tests continue with.
+        app.dependency_overrides[get_current_user] = lambda: db_session.get(models.User, "u-safe-0001")
 
 
-def test_review_lifecycle_happy_path(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
+def test_review_lifecycle_happy_path(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
     inspector = db_session.get(models.User, "u-safe-0001")
     manager = db_session.get(models.User, "u-mgr-0001")
     # scoped manager for the mine so review transitions are permitted
@@ -494,32 +497,32 @@ def test_review_lifecycle_happy_path(client, db_session):
     try:
         # as safety officer: start & submit
         app.dependency_overrides[get_current_user] = lambda: inspector
-        insp_id = _mk_inspection_for_review(client, db_session, mine)
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "submitted"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["review_status"] == "submitted"
 
         # inspector cannot approve their own inspection
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "approved"})
         assert resp.status_code == 422
 
         # manager approves
         app.dependency_overrides[get_current_user] = lambda: manager
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "under_review"})
         assert resp.status_code == 200, resp.text
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "approved"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["review_status"] == "approved"
         # closed after approved
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "closed"})
         assert resp.status_code == 200, resp.text
         # closed is terminal
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "draft"})
         assert resp.status_code == 422
     finally:
@@ -528,24 +531,24 @@ def test_review_lifecycle_happy_path(client, db_session):
         db_session.commit()
 
 
-def test_review_transition_requires_manager(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
+def test_review_transition_requires_manager(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
     officer = db_session.get(models.User, "u-safe-0001")
     app.dependency_overrides[get_current_user] = lambda: officer
     try:
-        insp_id = _mk_inspection_for_review(client, db_session, mine)
+        insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
         # officer (not manager of the mine) cannot approve/reject/under_review
-        resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+        resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                            json={"review_status": "under_review"})
         assert resp.status_code == 422
     finally:
         app.dependency_overrides[get_current_user] = lambda: db_session.get(models.User, "u-admin-0001")
 
 
-def test_review_invalid_jump_rejected(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
-    insp_id = _mk_inspection_for_review(client, db_session, mine)
-    resp = client.post(f"/api/governance/inspections/{insp_id}/review",
+def test_review_invalid_jump_rejected(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+    resp = ops_client.post(f"/api/governance/inspections/{insp_id}/review",
                        json={"review_status": "closed"})
     assert resp.status_code == 422  # draft/new -> closed is not a legal transition
 
@@ -559,10 +562,10 @@ def _png_bytes() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + b"0" * 64
 
 
-def test_evidence_upload_inspection(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
-    insp_id = _mk_inspection_for_review(client, db_session, mine)
-    resp = client.post(
+def test_evidence_upload_inspection(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+    resp = ops_client.post(
         "/api/governance/evidence",
         params={"kind": "inspection", "target_id": insp_id},
         files={"file": ("site.png", _png_bytes(), "image/png")},
@@ -572,15 +575,15 @@ def test_evidence_upload_inspection(client, db_session):
     assert body["media_type"] == "image"
     assert body["sha256"]  # hash recorded
     # download link resolution is mine-scoped and returns a URL/path
-    dl = client.get(f"/api/governance/evidence/{body['id']}/download")
+    dl = ops_client.get(f"/api/governance/evidence/{body['id']}/download")
     assert dl.status_code == 200
     assert dl.json()["url"]
 
 
-def test_evidence_rejects_disguised_file(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
-    insp_id = _mk_inspection_for_review(client, db_session, mine)
-    resp = client.post(
+def test_evidence_rejects_disguised_file(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+    resp = ops_client.post(
         "/api/governance/evidence",
         params={"kind": "inspection", "target_id": insp_id},
         files={"file": ("evil.png", b"<?php evil() ?>", "image/png")},
@@ -588,12 +591,12 @@ def test_evidence_rejects_disguised_file(client, db_session):
     assert resp.status_code == 415  # magic-byte check fails
 
 
-def test_evidence_cross_mine_denied(client, db_session):
+def test_evidence_cross_mine_denied(ops_client, db_session):
     """An officer permitted only on mine 1 cannot download mine 2's evidence."""
     from fastapi import HTTPException
-    mine = client.get("/api/mines").json()["items"][0]
-    insp_id = _mk_inspection_for_review(client, db_session, mine)
-    up = client.post(
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+    up = ops_client.post(
         "/api/governance/evidence",
         params={"kind": "inspection", "target_id": insp_id},
         files={"file": ("a.png", _png_bytes(), "image/png")},
@@ -605,7 +608,7 @@ def test_evidence_cross_mine_denied(client, db_session):
     db_session.commit()
     app.dependency_overrides[get_current_user] = lambda: officer
     try:
-        dl = client.get(f"/api/governance/evidence/{ev_id}/download")
+        dl = ops_client.get(f"/api/governance/evidence/{ev_id}/download")
         assert dl.status_code == 403
     finally:
         officer.permitted_mine_ids = original_permitted
@@ -618,9 +621,11 @@ def test_evidence_cross_mine_denied(client, db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_extended_reports(client, db_session):
-    mine = client.get("/api/mines").json()["items"][0]
-    insp_id = _mk_inspection_for_review(client, db_session, mine)
+def test_extended_reports(ops_client, db_session):
+    mine = ops_client.get("/api/mines").json()["items"][0]
+    insp_id = _mk_inspection_for_review(ops_client, db_session, mine)
+    # Org-wide reports are admin-only reads; continue as the administrator.
+    app.dependency_overrides[get_current_user] = lambda: db_session.get(models.User, "u-admin-0001")
     for path in (
         f"/api/governance/reports/violations/{mine['id']}.pdf",
         "/api/governance/reports/corrective-actions",
@@ -632,7 +637,7 @@ def test_extended_reports(client, db_session):
         f"/api/governance/reports/corrective-actions?mine_id={mine['id']}",
         f"/api/governance/reports/workforce?mine_id={mine['id']}",
     ):
-        r = client.get(path)
+        r = ops_client.get(path)
         assert r.status_code == 200, f"{path}: {r.text}"
         assert r.content.startswith(b"%PDF"), path
 
@@ -640,7 +645,17 @@ def test_extended_reports(client, db_session):
     officer = db_session.get(models.User, "u-safe-0001")
     app.dependency_overrides[get_current_user] = lambda: officer
     try:
-        r = client.get("/api/governance/reports/workforce")
+        r = ops_client.get("/api/governance/reports/workforce")
         assert r.status_code == 403
     finally:
         app.dependency_overrides[get_current_user] = lambda: db_session.get(models.User, "u-admin-0001")
+
+
+import pytest
+
+
+@pytest.fixture()
+def ops_client(client, as_role):
+    """Operational work runs as the safety officer, who owns these work areas."""
+    as_role("u-safe-0001")
+    return client

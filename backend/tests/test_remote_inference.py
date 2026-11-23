@@ -192,7 +192,8 @@ def test_remote_inference_success_logs_no_token(caplog):
 # ------------------------------------------------------------------ #
 # Endpoint-level: /frame uses the remote worker and fails honestly     #
 # ------------------------------------------------------------------ #
-def test_frame_endpoint_remote_worker_offline_is_truthful_503(client, monkeypatch):
+def test_frame_endpoint_remote_worker_offline_is_truthful_503(client, monkeypatch, as_role):
+    as_role("u-safe-0001")  # live-frame inference is an operational write
     from app.core.config import settings
     from app.services.detectors import remote_vyra
 
@@ -208,8 +209,9 @@ def test_frame_endpoint_remote_worker_offline_is_truthful_503(client, monkeypatc
         remote_vyra._singleton = None
 
 
-def test_frame_endpoint_remote_ok_no_events_when_worker_ok(client, monkeypatch):
+def test_frame_endpoint_remote_ok_no_events_when_worker_ok(client, monkeypatch, as_role):
     """A compliant remote result must NOT be turned into a fake violation."""
+    as_role("u-safe-0001")
     from app.core.config import settings
     from app.services.detectors import remote_vyra
 

@@ -28,7 +28,7 @@ const chartTooltipStyle = {
 export default function DashboardPage() {
   // Global mine selection (topbar selector) drives the dashboard scope; the
   // time range stays a local, page-level control.
-  const { mineId } = useMineSelection()
+  const { mineId, mines: scopedMines } = useMineSelection()
   const [days, setDays] = useState(7)
 
   const { data, loading, error, refetch } = useApiResource(
@@ -48,6 +48,13 @@ export default function DashboardPage() {
   if (loading && !data) return <div className="page"><PageHeader title="Dashboard" /><Skeleton lines={5} /></div>
   if (error) return <div className="page"><PageHeader title="Dashboard" /><ErrorState message={error} onRetry={refetch} /></div>
   if (!data) return null
+
+  // Scope shown in the title: the selected mine by name, or the honest
+  // "all accessible mines" label (never "all mines" for a scoped user).
+  const selectedMine = scopedMines.find((m) => m.id === mineId) ?? null
+  const scopeLabel = selectedMine
+    ? `${selectedMine.name} (${selectedMine.code})`
+    : `all accessible mines${scopedMines.length ? ` (${scopedMines.length})` : ''}`
 
   // ------------------------------------------------------------------
   // Overall safety posture — one honest headline derived from real data
@@ -84,7 +91,7 @@ export default function DashboardPage() {
     <div className="page">
       <PageHeader
         title="Dashboard"
-        subtitle={<>Live operational overview — all mines{mineId ? ' · filtered' : ''} · generated {new Date(data.generated_at).toLocaleString()}</>}
+        subtitle={<>Live operational overview · <strong>{scopeLabel}</strong> · generated {new Date(data.generated_at).toLocaleString()}</>}
         actions={
           <div className="filter-bar">
             <span className="muted" style={{ alignSelf: 'center' }}>

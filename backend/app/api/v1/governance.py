@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core import roles
 from app.core.config import settings
+from app.core.mine_scope import scope_column, visible_mine_ids
 from app.core.security import get_current_user
 from app.services.storage import sniff_mime
 from app.database.models import (
@@ -84,6 +85,7 @@ from app.schemas.governance import (
     RiskScoreOut,
     SensorDeviceCreate,
     SensorDeviceOut,
+    SensorDeviceUpdate,
     ShiftCreate,
     ShiftOut,
     SyncPushIn,
@@ -1024,7 +1026,15 @@ telemetry_router = APIRouter(
 
 @telemetry_router.get("/devices", response_model=list[SensorDeviceOut])
 def list_devices(db: DbSession, user: CurrentUser, mine_id: str | None = None):
-    stmt = select(SensorDevice)
+    """Device registry, always restricted to the caller's mine scope.
+
+    Admins see every device (the platform overview counts the same set), while
+    operational roles only see devices of mines they may access — so the list
+    and the platform counters can never disagree for the same user.
+    """
+    stmt = select(SensorDevice).where(
+        scope_column(SensorDevice.mine_id, visible_mine_ids(db, user))
+    )
     if mine_id:
         _ensure_mine_scope(user, mine_id, db)
         stmt = stmt.where(SensorDevice.mine_id == mine_id)
@@ -1032,7 +1042,7 @@ def list_devices(db: DbSession, user: CurrentUser, mine_id: str | None = None):
 
 
 @telemetry_router.post("/devices", response_model=SensorDeviceOut, status_code=201,
-                       dependencies=[Depends(roles.write_access("telemetry"))])
+                       dependencies=[Depends(roles.write_access("device_registry"))])
 def create_device(payload: SensorDeviceCreate, db: DbSession, user: CurrentUser):
     _get_mine_or_404(db, payload.mine_id)
     _ensure_mine_scope(user, payload.mine_id, db)
@@ -1040,6 +1050,25 @@ def create_device(payload: SensorDeviceCreate, db: DbSession, user: CurrentUser)
         raise HTTPException(status_code=422, detail="source must be 'real' or 'demo'.")
     row = SensorDevice(**payload.model_dump())
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@telemetry_router.patch("/devices/{device_id}", response_model=SensorDeviceOut,
+                        dependencies=[Depends(roles.write_access("device_registry"))])
+def update_device(device_id: str, payload: SensorDeviceUpdate, db: DbSession, user: CurrentUser):
+    """Edit / re-assign / activate-deactivate a registered sensor device."""
+    row = db.get(SensorDevice, device_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sensor device not found.")
+    _ensure_mine_scope(user, row.mine_id, db)
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("mine_id") and data["mine_id"] != row.mine_id:
+        _get_mine_or_404(db, data["mine_id"])
+        _ensure_mine_scope(user, data["mine_id"], db)
+    for field, value in data.items():
+        setattr(row, field, value)
     db.commit()
     db.refresh(row)
     return row

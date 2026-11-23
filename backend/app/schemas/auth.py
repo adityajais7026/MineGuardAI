@@ -134,3 +134,10 @@ class InvitationValidateResponse(BaseModel):
     role: str
     full_name: str
     expires_at: datetime
+
+
+class ChangePasswordRequest(BaseModel):
+    """Self-service password change (also the exit from a temporary password)."""
+
+    current_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=8, max_length=72)

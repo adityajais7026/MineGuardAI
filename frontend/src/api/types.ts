@@ -21,8 +21,20 @@ export interface User {
    *  mine_manager scope comes from mines.manager_id instead; admin unrestricted. */
   permitted_mine_ids?: string[]
   is_active: boolean
+  /** True while the account holds an administrator-issued temporary password:
+   *  the backend refuses every call except /auth/me and /auth/change-password. */
+  must_change_password?: boolean
   created_at: string
   updated_at: string
+}
+
+/** Returned once by an administrator password reset (never retrievable again). */
+export interface PasswordResetResult {
+  user_id: string
+  email: string
+  temporary_password: string
+  must_change_password: boolean
+  sessions_revoked: boolean
 }
 
 export interface LoginResponse {
@@ -319,6 +331,88 @@ export interface RiskAssessment {
   factors: RiskFactor[]
   counts: Record<string, number>
   disclaimer: string
+}
+
+// ---- Platform administration (admin-only API) ----
+
+export interface AdminActivityEvent {
+  id: string
+  seq: number
+  created_at: string
+  actor_role: string | null
+  action: string
+  entity_type: string
+  entity_id: string | null
+  mine_id: string | null
+}
+
+export interface AdminOverview {
+  mines: {
+    total: number
+    active: number
+    inactive: number
+    by_status: Record<string, number>
+  }
+  users: {
+    total: number
+    active: number
+    inactive: number
+    by_role: Record<string, number>
+  }
+  devices: {
+    total: number
+    active: number
+    inactive: number
+    online: number
+    never_connected: number
+    online_window_minutes: number
+  }
+  invitations: { pending: number }
+  audit: { entries: number }
+  recent_activity: AdminActivityEvent[]
+  generated_at: string
+}
+
+export interface HealthComponent {
+  status: string
+  detail?: string
+  provider?: string
+  engine?: string
+  version?: string
+  configured?: boolean
+}
+
+export interface SystemHealth {
+  api: HealthComponent
+  database: HealthComponent
+  ai_worker: HealthComponent
+  storage: HealthComponent
+  integrations: Record<string, HealthComponent>
+  error_log: HealthComponent
+  checked_at: string
+}
+
+export interface AdminRoleEntry {
+  role: Role
+  label: string
+  users: number
+  mine_access: string
+  write_areas: string[]
+}
+
+export interface AdminRolesResponse {
+  roles: AdminRoleEntry[]
+  write_matrix: Record<string, string[]>
+  notes: string[]
+}
+
+export interface PlatformConfig {
+  editable: boolean
+  note: string
+  platform: Record<string, string | number | boolean>
+  registration: Record<string, string | number | boolean | string[]>
+  session_security: Record<string, string | number | boolean>
+  platform_preferences: Record<string, string | number | boolean>
 }
 
 export interface DashboardSummary {

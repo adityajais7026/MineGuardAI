@@ -44,7 +44,7 @@ from app.schemas.restricted_zone import (
     RestrictedZoneResponse,
     RestrictedZoneUpdate,
 )
-from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.schemas.user import PasswordResetResponse, UserCreate, UserResponse, UserUpdate
 
 __all__ = [
     "AlertCreate",
@@ -80,5 +80,6 @@ __all__ = [
     "RestrictedZoneUpdate",
     "UserCreate",
     "UserResponse",
+    "PasswordResetResponse",
     "UserUpdate",
 ]

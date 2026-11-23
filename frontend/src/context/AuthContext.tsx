@@ -13,6 +13,9 @@ interface AuthContextValue {
   /** Full OTP registration (invitation-code only; every successful
    *  registration issues a JWT). */
   register: (payload: RegisterCompleteRequest) => Promise<RegisterCompleteResponse>
+  /** Self-service password change; clears a temporary-password flag and
+   *  replaces the stored token with the newly issued session. */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   logout: () => void
 }
 
@@ -68,6 +71,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res
   }, [])
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const res = await authApi.changePassword(currentPassword, newPassword)
+    setStoredToken(res.access_token)
+    setUser(res.user)
+  }, [])
+
   const logout = useCallback(() => {
     setStoredToken(null)
     setUser(null)
@@ -81,8 +90,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(
-    () => ({ user, loading, login, loginVerifyOtp, register, logout }),
-    [user, loading, login, loginVerifyOtp, register, logout],
+    () => ({ user, loading, login, loginVerifyOtp, register, changePassword, logout }),
+    [user, loading, login, loginVerifyOtp, register, changePassword, logout],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
