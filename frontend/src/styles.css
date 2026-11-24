@@ -798,3 +798,73 @@ textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px;
 .confirm-field { display: flex; flex-direction: column; gap: .35rem; margin-top: .55rem; }
 .confirm-field > span { font-size: .82rem; color: var(--muted); }
 .confirm-field input { width: 100%; }
+
+/* ------------------------------------------------------------------ */
+/* Users page: role tabs, filters, pagination, role-change confirmation */
+/* ------------------------------------------------------------------ */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.user-tabs {
+  display: flex; flex-wrap: wrap; gap: .4rem; border-bottom: 1px solid var(--border, #e2e8f0);
+  padding-bottom: .55rem; margin-bottom: .75rem;
+}
+.user-tab {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .42rem .7rem; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border, #e2e8f0); background: transparent;
+  color: var(--muted); font-size: .86rem; font-weight: 600;
+}
+.user-tab:hover { border-color: var(--accent, #2563eb); color: inherit; }
+.user-tab.is-active {
+  background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff;
+}
+.user-tab-count {
+  min-width: 1.4rem; padding: 0 .35rem; border-radius: 999px;
+  background: rgba(100, 116, 139, .18); font-size: .74rem; text-align: center;
+}
+.user-tab.is-active .user-tab-count { background: rgba(255, 255, 255, .28); }
+.user-tab-short { display: none; }
+
+.user-filters {
+  display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin-bottom: .4rem;
+}
+.user-search { flex: 1 1 260px; }
+.user-search input {
+  width: 100%; padding: .5rem .65rem; border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0); background: var(--surface, #fff); color: inherit;
+}
+.user-status-filter { display: flex; align-items: center; gap: .4rem; font-size: .84rem; }
+.user-status-filter select { padding: .45rem .5rem; border-radius: 8px; }
+.user-counts { font-size: .82rem; margin: .25rem 0 .6rem; }
+
+.user-pagination {
+  display: flex; align-items: center; justify-content: flex-end; gap: .6rem;
+  padding-top: .6rem; font-size: .84rem;
+}
+
+.user-name-btn {
+  background: none; border: 0; padding: 0; font: inherit; font-weight: 600;
+  color: inherit; cursor: pointer; text-align: left;
+}
+.user-name-btn:hover { text-decoration: underline; }
+
+.role-change-confirm {
+  border: 1px solid var(--warn, #b45309); border-radius: 10px;
+  padding: .7rem .8rem; background: rgba(180, 83, 9, .07); font-size: .86rem;
+}
+
+@media (max-width: 640px) {
+  .user-tab-full { display: none; }
+  .user-tab-short { display: inline; }
+  .user-pagination { justify-content: space-between; }
+}
+
+/* Narrow screens: long identifiers (emails, ids, codes) must wrap inside the
+   stacked table layout instead of pushing the page sideways. */
+@media (max-width: 700px) {
+  .table-responsive td { min-width: 0; }
+  .table-responsive td code { word-break: break-all; }
+}

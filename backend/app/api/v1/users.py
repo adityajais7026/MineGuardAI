@@ -24,6 +24,7 @@ import string
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,7 +36,7 @@ from app.core.security import (
     password_policy_error,
     require_roles,
 )
-from app.database.models import User
+from app.database.models import Mine, User
 from app.database.session import get_db
 from app.schemas import UserCreate, UserResponse, UserUpdate
 from app.schemas.common import PaginatedResponse
@@ -62,6 +63,51 @@ _TEMP_ALPHABET = (
 )
 
 TEMP_PASSWORD_LENGTH = 16
+
+# The four platform roles, in display order (administrators first).
+USER_ROLES: tuple[str, ...] = (
+    "admin",
+    "environmental_officer",
+    "mine_manager",
+    "safety_officer",
+)
+
+
+def _search_condition(db: Session, q: str | None):
+    """Match a user by name, email, or the mine they are assigned to.
+
+    A user is "assigned" to a mine when they manage it (mines.manager_id) or
+    it is in their permitted-mine scope (officers). Searching by mine name or
+    code therefore finds the people who actually work on that mine.
+    """
+    if not q or not q.strip():
+        return None
+    like = f"%{q.strip().lower()}%"
+    conditions = [
+        func.lower(User.full_name).like(like),
+        func.lower(User.email).like(like),
+        func.lower(User.role).like(like),
+    ]
+    mine_ids = list(
+        db.scalars(
+            select(Mine.id).where(
+                or_(func.lower(Mine.name).like(like), func.lower(Mine.code).like(like))
+            )
+        ).all()
+    )
+    if mine_ids:
+        conditions.append(
+            User.id.in_(
+                select(Mine.manager_id).where(
+                    Mine.id.in_(mine_ids), Mine.manager_id.is_not(None)
+                )
+            )
+        )
+        # permitted_mine_ids is a JSON array; a quoted-id match works on both
+        # SQLite (TEXT) and PostgreSQL (json -> text) without a DB-specific op.
+        for mine_id in mine_ids[:50]:
+            conditions.append(cast(User.permitted_mine_ids, String).like(f'%"{mine_id}"%'))
+    return or_(*conditions)
 
 
 def _to_response(user: User) -> UserResponse:
@@ -126,9 +172,20 @@ def list_users(
     limit: int = Query(default=100, ge=1, le=200),
     role: str | None = None,
     is_active: bool | None = None,
+    q: str | None = Query(default=None, max_length=120, description="Search name, email, role or assigned mine"),
     sort: str = Query(default="created_at"),
     order: Literal["asc", "desc"] = "desc",
 ):
+    """Directory listing with role filter, free-text search and true totals.
+
+    `total` counts every row matching the filters (not just this page), so the
+    UI can paginate and show accurate per-role counts.
+    """
+    if role is not None and role not in USER_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown role '{role}'. Expected one of: {', '.join(USER_ROLES)}.",
+        )
     items, total = service.list(
         db,
         skip=skip,
@@ -136,8 +193,33 @@ def list_users(
         filters={"role": role, "is_active": is_active},
         sort=sort,
         order=order,
+        additional_filter=_search_condition(db, q),
     )
     return {"items": [_to_response(u) for u in items], "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/role-counts", dependencies=[Depends(require_roles("admin"))])
+def role_counts(
+    db: DbSession,
+    q: str | None = Query(default=None, max_length=120),
+) -> dict:
+    """Accurate counts behind the role tabs (respects the active search)."""
+    condition = _search_condition(db, q)
+
+    def count(*extra) -> int:
+        query = select(func.count()).select_from(User)
+        if condition is not None:
+            query = query.where(condition)
+        for clause in extra:
+            query = query.where(clause)
+        return int(db.scalar(query) or 0)
+
+    return {
+        "total": count(),
+        "by_role": {role: count(User.role == role) for role in USER_ROLES},
+        "active": count(User.is_active.is_(True)),
+        "inactive": count(User.is_active.is_(False)),
+    }
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED,
@@ -181,7 +263,15 @@ def update_user(db: DbSession, user_id: str, payload: UserUpdate, current: Curre
     user = service.get(db, user_id)
     data = payload.model_dump(exclude_unset=True)
 
+    before_role = user.role
+    before_active = user.is_active
+    before_mines = list(user.permitted_mine_ids or [])
+
     # Role/status changes on an Administrator must not strand the platform.
+    if data.get("role") not in (None, before_role):
+        # An administrator cannot change their own role: a slip would lock the
+        # only signed-in platform administrator out of the admin area.
+        _assert_not_self(current, user, "change the role of")
     if data.get("role") not in (None, "admin") and user.role == "admin":
         _assert_not_last_admin(db, user, "change the role of")
     if data.get("is_active") is False:
@@ -224,9 +314,27 @@ def update_user(db: DbSession, user_id: str, payload: UserUpdate, current: Curre
             "method": "administrator_set_password",
             "must_change_password": True,
             "sessions_revoked": True,
-            "role_changed": "role" in data,
+            "role_changed": before_role != user.role,
         })
-    elif data.get("is_active") is False:
+
+    # Role, mine scope and status changes each get their own immutable entry so
+    # an administrator's privilege changes are independently reviewable.
+    if before_role != user.role:
+        _audit(db, current, "user.role_changed", user, {
+            "from": before_role,
+            "to": user.role,
+        })
+    after_mines = list(user.permitted_mine_ids or [])
+    if before_mines != after_mines:
+        _audit(db, current, "user.mines_assigned", user, {
+            "from": before_mines,
+            "to": after_mines,
+            "added": [m for m in after_mines if m not in before_mines],
+            "removed": [m for m in before_mines if m not in after_mines],
+        })
+    if before_active is False and user.is_active:
+        _audit(db, current, "user.activated", user, {})
+    elif before_active and user.is_active is False:
         _audit(db, current, "user.deactivated", user, {"sessions_revoked": True})
     return _to_response(user)
 

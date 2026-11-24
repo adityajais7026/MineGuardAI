@@ -8,6 +8,14 @@ export interface Paginated<T> {
 }
 
 export type Role = 'admin' | 'mine_manager' | 'safety_officer' | 'environmental_officer'
+
+/** Directory totals per role, used by the Users page tabs. */
+export interface RoleCounts {
+  total: number
+  by_role: Partial<Record<Role, number>>
+  active: number
+  inactive: number
+}
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 
 export interface User {

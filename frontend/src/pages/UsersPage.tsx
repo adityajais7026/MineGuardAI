@@ -3,7 +3,9 @@ import { minesApi, usersApi } from '../api/endpoints'
 import { useAuth } from '../context/AuthContext'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
-import type { InvitationCreated, InvitationSummary, Mine, PasswordResetResult, User, UserDeleteImpact } from '../api/types'
+import type {
+  InvitationCreated, InvitationSummary, Mine, PasswordResetResult, User, UserDeleteImpact,
+} from '../api/types'
 import {
   Badge, EmptyState, ErrorState, Loading, Modal, PageHeader,
 } from '../components/ui'
@@ -15,12 +17,41 @@ const ROLE_OPTIONS = [
   { value: 'admin', label: 'Administrator' },
 ] as const
 
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'Administrator',
-  mine_manager: 'Mine Manager',
-  safety_officer: 'Safety Officer',
-  environmental_officer: 'Government Officer',
+/** Label, badge tone and the permission scope shown before a role change. */
+const ROLE_META: Record<string, { label: string; tone: 'ok' | 'warn' | 'danger' | 'info' | 'muted'; scope: string }> = {
+  admin: {
+    label: 'Administrator',
+    tone: 'info',
+    scope: 'Platform administration only: users, the mine registry and the sensor-device registry. Administrators cannot file inspections, resolve alerts, close corrective actions or touch telemetry.',
+  },
+  environmental_officer: {
+    label: 'Government Officer',
+    tone: 'warn',
+    scope: 'Environment readings, compliance rules, alerts and corrective actions — limited to the mines assigned to them.',
+  },
+  mine_manager: {
+    label: 'Mine Manager',
+    tone: 'ok',
+    scope: 'Day-to-day operations (inspections, incidents, alerts, actions, workforce) in the mines where they are the registered manager.',
+  },
+  safety_officer: {
+    label: 'Safety Officer',
+    tone: 'danger',
+    scope: 'Alerts, incidents, inspections, camera events and AI simulation — limited to the mines assigned to them.',
+  },
 }
+
+type TabValue = 'all' | User['role']
+
+const ROLE_TABS: { value: TabValue; label: string; short: string }[] = [
+  { value: 'all', label: 'All users', short: 'All' },
+  { value: 'admin', label: 'Admin', short: 'Admin' },
+  { value: 'environmental_officer', label: 'Government Officer', short: 'Gov. Officer' },
+  { value: 'mine_manager', label: 'Mine Manager', short: 'Mine Mgr' },
+  { value: 'safety_officer', label: 'Safety Officer', short: 'Safety' },
+]
+
+const PAGE_SIZE = 10
 
 const STATUS_TONE: Record<string, 'ok' | 'warn' | 'muted' | 'danger'> = {
   Active: 'warn',
@@ -30,6 +61,10 @@ const STATUS_TONE: Record<string, 'ok' | 'warn' | 'muted' | 'danger'> = {
 }
 
 const EMPTY_INVITE_FORM = { full_name: '', email: '', role: 'safety_officer' }
+
+function roleLabel(role: string): string {
+  return ROLE_META[role]?.label ?? role.replace(/_/g, ' ')
+}
 
 /** Copy exactly `text` — no extra whitespace/quotes — with a legacy fallback. */
 async function copyText(text: string): Promise<boolean> {
@@ -56,11 +91,75 @@ async function copyText(text: string): Promise<boolean> {
 
 export default function UsersPage() {
   const { user: currentUser } = useAuth()
-  const { data, loading, error, refetch } = useApiResource(() => usersApi.list({ limit: 200 }), [])
+
+  // --- Directory browsing: role tabs, search, status filter, pagination ----
+  const [tab, setTab] = useState<TabValue>('all')
+  const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deactivated'>('all')
+  const [page, setPage] = useState(0)
+
+  // Debounce the search box so typing does not fire a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => { setQuery(search.trim()); setPage(0) }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  const listParams = {
+    skip: page * PAGE_SIZE,
+    limit: PAGE_SIZE,
+    ...(tab === 'all' ? {} : { role: tab }),
+    ...(query ? { q: query } : {}),
+    ...(statusFilter === 'all' ? {} : { is_active: statusFilter === 'active' }),
+  }
+
+  const { data, loading, error, refetch } = useApiResource(
+    () => usersApi.list(listParams), [tab, query, statusFilter, page],
+  )
+  const { data: counts, refetch: refetchCounts } = useApiResource(
+    () => usersApi.roleCounts(query ? { q: query } : undefined), [query],
+  )
   const { data: invitations, refetch: refetchInvitations } = useApiResource(
     () => usersApi.invitations({ limit: 50 }), [],
   )
   const { data: allMines } = useApiResource(() => minesApi.list({ limit: 200 }).then((r) => r.items), [])
+
+  const mines: Mine[] = allMines ?? []
+  const mineById = new Map(mines.map((m) => [m.id, m]))
+
+  /** Mines a user is actually assigned to, by role. */
+  function assignedMines(u: User): Mine[] {
+    if (u.role === 'admin') return mines
+    if (u.role === 'mine_manager') return mines.filter((m) => m.manager_id === u.id)
+    return (u.permitted_mine_ids ?? []).map((id) => mineById.get(id)).filter((m): m is Mine => Boolean(m))
+  }
+
+  function mineSummary(u: User): string {
+    if (u.role === 'admin') return `All mines (${mines.length})`
+    const assigned = assignedMines(u)
+    if (assigned.length === 0) return 'No mines assigned'
+    const names = assigned.slice(0, 2).map((m) => m.name).join(', ')
+    return assigned.length > 2 ? `${names} +${assigned.length - 2} more` : names
+  }
+
+  const total = data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1
+  const showingTo = Math.min(total, page * PAGE_SIZE + (data?.items.length ?? 0))
+
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1)
+  }, [page, pageCount])
+
+  function countFor(value: TabValue): number {
+    if (!counts) return 0
+    return value === 'all' ? counts.total : (counts.by_role[value] ?? 0)
+  }
+
+  function refreshDirectory() {
+    refetch()
+    refetchCounts()
+  }
 
   // --- Live-detection mine scope (admin-managed, backend-enforced) --------
   const [scopeTarget, setScopeTarget] = useState<User | null>(null)
@@ -91,6 +190,9 @@ export default function UsersPage() {
   // Typed confirmation: permanent deletion cannot be triggered by a stray click.
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
+  // --- User details ------------------------------------------------------
+  const [detailUser, setDetailUser] = useState<User | null>(null)
+
   // --- Edit user information (name, role, mobile, status, password) -------
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [editForm, setEditForm] = useState({
@@ -99,6 +201,8 @@ export default function UsersPage() {
   const [editError, setEditError] = useState<string | null>(null)
   const [editBusy, setEditBusy] = useState(false)
   const [editSuccess, setEditSuccess] = useState<string | null>(null)
+  // A role change is privileged: require an explicit acknowledgement.
+  const [roleConfirmed, setRoleConfirmed] = useState(false)
 
   // --- Administrator password reset (temporary password, shown once) ------
   const [resetTarget, setResetTarget] = useState<User | null>(null)
@@ -194,10 +298,12 @@ export default function UsersPage() {
     }
   }
 
-  async function toggleActive(id: string, isActive: boolean) {
+  async function toggleActive(u: User) {
+    setEditSuccess(null)
     try {
-      await usersApi.update(id, { is_active: !isActive })
-      refetch()
+      await usersApi.update(u.id, { is_active: !u.is_active })
+      setEditSuccess(`${u.full_name} is now ${u.is_active ? 'deactivated' : 'active'}.`)
+      refreshDirectory()
     } catch (err) {
       alert(err instanceof ApiError ? err.message : 'Update failed')
     }
@@ -216,7 +322,8 @@ export default function UsersPage() {
     try {
       await usersApi.update(scopeTarget.id, { permitted_mine_ids: scopeSelected })
       setScopeTarget(null)
-      refetch()
+      setEditSuccess(`Mine assignment updated for ${scopeTarget.full_name}.`)
+      refreshDirectory()
     } catch (err) {
       setScopeError(err instanceof ApiError ? err.message : 'Could not update mine access')
     } finally {
@@ -236,9 +343,12 @@ export default function UsersPage() {
       password: '',
       is_active: u.is_active,
     })
+    setRoleConfirmed(false)
     setEditError(null)
     setEditingUser(u)
   }
+
+  const pendingRoleChange = Boolean(editingUser && editForm.role !== editingUser.role)
 
   async function handleSaveEdit(e: React.FormEvent) {
     e.preventDefault()
@@ -252,18 +362,24 @@ export default function UsersPage() {
       setEditError('A new password must be at least 8 characters.')
       return
     }
+    if (pendingRoleChange && !roleConfirmed) {
+      setEditError('Confirm the role change before saving.')
+      return
+    }
     setEditBusy(true)
     try {
       await usersApi.update(editingUser.id, {
         full_name: editForm.full_name.trim(),
-        role: editForm.role,
+        ...(pendingRoleChange ? { role: editForm.role } : {}),
         is_active: editForm.is_active,
         mobile: editForm.mobile.trim() || null,
         ...(editForm.password ? { password: editForm.password } : {}),
       })
       setEditingUser(null)
-      setEditSuccess(`User information updated for ${editingUser.full_name}.`)
-      refetch()
+      setEditSuccess(pendingRoleChange
+        ? `${editingUser.full_name} is now ${roleLabel(editForm.role)}. The change is recorded in the audit log.`
+        : `User information updated for ${editingUser.full_name}.`)
+      refreshDirectory()
     } catch (err) {
       setEditError(err instanceof ApiError ? err.message : 'Could not update the user.')
     } finally {
@@ -285,7 +401,7 @@ export default function UsersPage() {
     try {
       const result = await usersApi.resetPassword(resetTarget.id)
       setResetResult(result)
-      refetch()
+      refreshDirectory()
     } catch (err) {
       setResetError(err instanceof ApiError ? err.message : 'Could not reset the password.')
     } finally {
@@ -307,16 +423,13 @@ export default function UsersPage() {
       setDeleteSuccess(report.detail)
       setDeleteTarget(null)
       setDeleteConfirmText('')
-      refetch()
+      refreshDirectory()
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : 'Deletion failed')
     } finally {
       setBusy(false)
     }
   }
-
-  if (loading) return <Loading />
-  if (error) return <div className="page"><ErrorState message={error} onRetry={refetch} /></div>
 
   return (
     <div className="page">
@@ -332,63 +445,171 @@ export default function UsersPage() {
         </div>
       )}
 
-      {(data?.items.length ?? 0) === 0 ? <EmptyState message="No users found." /> : (
-        <div className="card">
+      <div className="card">
+        <div className="user-tabs" role="tablist" aria-label="Users by role">
+          {ROLE_TABS.map((t) => (
+            <button
+              key={t.value}
+              role="tab"
+              aria-selected={tab === t.value}
+              className={`user-tab${tab === t.value ? ' is-active' : ''}`}
+              onClick={() => { setTab(t.value); setPage(0) }}
+            >
+              <span className="user-tab-full">{t.label}</span>
+              <span className="user-tab-short">{t.short}</span>
+              <span className="user-tab-count">{countFor(t.value)}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="user-filters">
+          <label className="user-search">
+            <span className="sr-only">Search users</span>
+            <input
+              type="search"
+              value={search}
+              placeholder="Search name, email, role or assigned mine…"
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </label>
+          <label className="user-status-filter">
+            <span className="muted">Status</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value as typeof statusFilter); setPage(0) }}
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="deactivated">Deactivated</option>
+            </select>
+          </label>
+          {(query || statusFilter !== 'all' || tab !== 'all') && (
+            <button
+              className="btn btn-sm"
+              onClick={() => { setSearch(''); setQuery(''); setStatusFilter('all'); setTab('all'); setPage(0) }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        <p className="muted user-counts" aria-live="polite">
+          {loading ? 'Loading users…' : `Showing ${showingFrom}–${showingTo} of ${total} ${total === 1 ? 'user' : 'users'}`}
+          {counts ? ` · ${counts.active} active · ${counts.inactive} deactivated` : ''}
+        </p>
+
+        {error ? (
+          <ErrorState message={error} onRetry={refetch} />
+        ) : loading && !data ? (
+          <Loading />
+        ) : (data?.items.length ?? 0) === 0 ? (
+          <EmptyState message={query || statusFilter !== 'all'
+            ? 'No users match these filters.'
+            : 'No users in this role yet.'} />
+        ) : (
           <table className="table table-responsive">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Live mines</th><th /></tr></thead>
+            <thead>
+              <tr>
+                <th>User</th><th>Role</th><th>Account</th><th>Assigned mines</th><th />
+              </tr>
+            </thead>
             <tbody>
-              {data!.items.map((u) => (
-                <tr key={u.id}>
-                  <td data-label="Name">{u.full_name}</td>
-                  <td data-label="Email"><code>{u.email}</code></td>
-                  <td data-label="Role"><Badge text={ROLE_LABEL[u.role] ?? u.role.replace(/_/g, ' ')} tone="info" /></td>
-                  <td data-label="Status"><Badge text={u.is_active ? 'active' : 'deactivated'} tone={u.is_active ? 'ok' : 'danger'} /></td>
-                  <td data-label="Live mines">
-                    {u.role === 'admin' ? <span className="muted">all mines</span>
-                      : u.role === 'mine_manager' ? <span className="muted">managed mines</span>
-                      : <Badge text={String(u.permitted_mine_ids?.length ?? 0)} tone={(u.permitted_mine_ids?.length ?? 0) > 0 ? 'ok' : 'muted'} />}
-                  </td>
-                  <td className="table-actions">
-                    <button className="btn btn-sm" onClick={() => openEdit(u)}
-                      title="Edit name, role, mobile, status or password">
-                      Edit
-                    </button>
-                    {u.role !== 'admin' && (
-                      <button className="btn btn-sm" onClick={() => openScopeEditor(u)}
-                        title="Choose which mines this user can run live detection in">
-                        Assign mines
+              {data!.items.map((u) => {
+                const meta = ROLE_META[u.role]
+                const mineCount = assignedMines(u).length
+                return (
+                  <tr key={u.id}>
+                    <td data-label="User">
+                      <button className="user-name-btn" onClick={() => setDetailUser(u)} title="Show full account details">
+                        {u.full_name}
                       </button>
-                    )}
-                    <button className="btn btn-sm" onClick={() => toggleActive(u.id, u.is_active)}>
-                      {u.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => openReset(u)}
-                      disabled={u.id === currentUser?.id}
-                      title={u.id === currentUser?.id
-                        ? 'Change your own password from the Profile page'
-                        : 'Issue a temporary password; the user must change it at next sign-in'}
-                    >
-                      Reset password
-                    </button>
-                    <button
-                      className="btn btn-danger btn-sm"
-                      onClick={() => { setDeleteSuccess(null); setEditSuccess(null); setDeleteConfirmText(''); setDeleteTarget(u) }}
-                      disabled={u.id === currentUser?.id}
-                      title={u.id === currentUser?.id
-                        ? 'You cannot delete your own account'
-                        : 'Permanently delete this account (cannot be undone)'}
-                    >
-                      Delete Permanently
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                      <div className="muted"><code>{u.email}</code></div>
+                    </td>
+                    <td data-label="Role">
+                      <Badge text={meta?.label ?? roleLabel(u.role)} tone={meta?.tone ?? 'muted'} dot />
+                    </td>
+                    <td data-label="Account">
+                      <Badge
+                        text={u.is_active ? 'active' : 'deactivated'}
+                        tone={u.is_active ? 'ok' : 'danger'}
+                        dot
+                      />
+                      {u.must_change_password && (
+                        <div style={{ marginTop: 4 }}>
+                          <Badge text="password change pending" tone="warn" />
+                        </div>
+                      )}
+                      {u.id === currentUser?.id && (
+                        <div style={{ marginTop: 4 }}><Badge text="you" tone="muted" /></div>
+                      )}
+                    </td>
+                    <td data-label="Assigned mines">
+                      <span className="muted">{mineSummary(u)}</span>
+                      {u.role !== 'admin' && (
+                        <div className="muted" style={{ fontSize: '.78rem' }}>
+                          {mineCount === 0 ? 'no scoped access' : `${mineCount} of ${mines.length} mines`}
+                        </div>
+                      )}
+                    </td>
+                    <td className="table-actions">
+                      <button className="btn btn-sm" onClick={() => setDetailUser(u)}>Details</button>
+                      <button className="btn btn-sm" onClick={() => openEdit(u)}
+                        title="Edit name, role, mobile, status or password">
+                        Edit
+                      </button>
+                      {u.role !== 'admin' && (
+                        <button className="btn btn-sm" onClick={() => openScopeEditor(u)}
+                          title="Choose which mines this user can work in">
+                          Assign mines
+                        </button>
+                      )}
+                      <button className="btn btn-sm" onClick={() => toggleActive(u)}>
+                        {u.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => openReset(u)}
+                        disabled={u.id === currentUser?.id}
+                        title={u.id === currentUser?.id
+                          ? 'Change your own password from the Profile page'
+                          : 'Issue a temporary password; the user must change it at next sign-in'}
+                      >
+                        Reset password
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => { setDeleteSuccess(null); setEditSuccess(null); setDeleteConfirmText(''); setDeleteTarget(u) }}
+                        disabled={u.id === currentUser?.id}
+                        title={u.id === currentUser?.id
+                          ? 'You cannot delete your own account'
+                          : 'Permanently delete this account (cannot be undone)'}
+                      >
+                        Delete Permanently
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+
+        {total > PAGE_SIZE && (
+          <div className="user-pagination">
+            <button className="btn btn-sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+              ← Previous
+            </button>
+            <span className="muted">Page {page + 1} of {pageCount}</span>
+            <button
+              className="btn btn-sm"
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              disabled={page >= pageCount - 1}
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </div>
 
       {invitations && invitations.items.length > 0 && (
         <div className="card">
@@ -408,7 +629,7 @@ export default function UsersPage() {
                   <tr key={inv.id}>
                     <td>{inv.full_name}</td>
                     <td><code>{inv.email}</code></td>
-                    <td><Badge text={ROLE_LABEL[inv.role] ?? inv.role.replace(/_/g, ' ')} tone="info" /></td>
+                    <td><Badge text={roleLabel(inv.role)} tone={ROLE_META[inv.role]?.tone ?? 'muted'} /></td>
                     <td>
                       {inv.code ? <code style={{ wordBreak: 'break-all' }}>{inv.code}</code> : <span className="muted">—</span>}
                     </td>
@@ -453,6 +674,51 @@ export default function UsersPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {detailUser && (
+        <Modal title={`User details — ${detailUser.full_name}`} onClose={() => setDetailUser(null)}>
+          <table className="table">
+            <tbody>
+              <tr><th scope="row">Name</th><td>{detailUser.full_name}</td></tr>
+              <tr><th scope="row">Email</th><td><code>{detailUser.email}</code></td></tr>
+              <tr><th scope="row">Role</th><td><Badge text={roleLabel(detailUser.role)} tone={ROLE_META[detailUser.role]?.tone ?? 'muted'} dot /></td></tr>
+              <tr><th scope="row">Account</th>
+                <td>
+                  <Badge text={detailUser.is_active ? 'active' : 'deactivated'} tone={detailUser.is_active ? 'ok' : 'danger'} dot />
+                  {detailUser.must_change_password && <span> <Badge text="password change pending" tone="warn" /></span>}
+                </td>
+              </tr>
+              <tr><th scope="row">Mobile</th><td>{detailUser.mobile ? <code>{detailUser.mobile}</code> : <span className="muted">not registered</span>}</td></tr>
+              <tr><th scope="row">User ID</th><td><code>{detailUser.id}</code></td></tr>
+              <tr><th scope="row">Created</th><td>{new Date(detailUser.created_at).toLocaleString()}</td></tr>
+              <tr><th scope="row">Last updated</th><td>{new Date(detailUser.updated_at).toLocaleString()}</td></tr>
+              <tr>
+                <th scope="row">Assigned mines</th>
+                <td>
+                  {detailUser.role === 'admin'
+                    ? <span>All registered mines ({mines.length})</span>
+                    : assignedMines(detailUser).length === 0
+                      ? <span className="muted">None assigned — no scoped access</span>
+                      : (
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {assignedMines(detailUser).map((m) => (
+                            <li key={m.id}>{m.name} <span className="muted">({m.code})</span></li>
+                          ))}
+                        </ul>
+                      )}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="muted" style={{ marginBottom: 0 }}>
+            <strong>Permissions of this role:</strong> {ROLE_META[detailUser.role]?.scope}
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={() => setDetailUser(null)}>Close</button>
+            <button className="btn btn-primary" onClick={() => { const u = detailUser; setDetailUser(null); openEdit(u) }}>Edit user</button>
+          </div>
+        </Modal>
       )}
 
       {showInvite && (
@@ -507,15 +773,15 @@ export default function UsersPage() {
       )}
 
       {scopeTarget && (
-        <Modal title={`Live-detection mines — ${scopeTarget.full_name}`} onClose={() => setScopeTarget(null)}>
+        <Modal title={`Assigned mines — ${scopeTarget.full_name}`} onClose={() => setScopeTarget(null)}>
           <p className="muted" style={{ marginTop: 0 }}>
             {scopeTarget.role === 'mine_manager'
-              ? 'Mine Managers automatically get the mines where they are registered as manager (set on the Mines page). This list is used for Safety Officers and Government Officers.'
-              : 'This user can only run live detection in the mines selected here. No selection means no live-detection access.'}
+              ? 'Mine Managers work in the mines where they are registered as manager (set on the Mines page). This list is used for live detection by Safety Officers and Government Officers.'
+              : 'This user can only work in the mines selected here. No selection means no mine-scoped access.'}
           </p>
-          {(allMines ?? []).length === 0 ? <p className="muted">No mines exist yet — create one on the Mines page.</p> : (
+          {mines.length === 0 ? <p className="muted">No mines exist yet — create one on the Mines page.</p> : (
             <div style={{ display: 'grid', gap: 6 }}>
-              {(allMines as Mine[]).map((m) => (
+              {mines.map((m) => (
                 <label key={m.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <input type="checkbox" checked={scopeSelected.includes(m.id)} onChange={() => toggleScopeMine(m.id)} />
                   <span>{m.name} <span className="muted">({m.code})</span></span>
@@ -523,6 +789,9 @@ export default function UsersPage() {
               ))}
             </div>
           )}
+          <p className="muted" style={{ fontSize: '.8rem' }}>
+            {scopeSelected.length} of {mines.length} mines selected. Changes are recorded in the audit log.
+          </p>
           {scopeError && <div className="form-error" role="alert">{scopeError}</div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button className="btn" onClick={() => setScopeTarget(null)} disabled={scopeBusy}>Cancel</button>
@@ -567,10 +836,39 @@ export default function UsersPage() {
             </label>
             <label>Role
               <select value={editForm.role}
-                onChange={(e) => setEditForm({ ...editForm, role: e.target.value as User['role'] })}>
+                onChange={(e) => {
+                  setEditForm({ ...editForm, role: e.target.value as User['role'] })
+                  setRoleConfirmed(false)
+                }}>
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
             </label>
+
+            {pendingRoleChange && (
+              <div className="role-change-confirm" role="alert">
+                <p style={{ marginTop: 0 }}>
+                  <strong>Change role:</strong> {roleLabel(editingUser.role)} → {roleLabel(editForm.role)}
+                </p>
+                <p className="muted" style={{ marginTop: 0 }}>
+                  {ROLE_META[editForm.role]?.scope}
+                </p>
+                <p className="muted" style={{ marginTop: 0 }}>
+                  Mine assignments are not changed automatically. Review this account&apos;s assigned
+                  mines after the role change.
+                </p>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <input
+                    type="checkbox"
+                    checked={roleConfirmed}
+                    onChange={(e) => setRoleConfirmed(e.target.checked)}
+                  />
+                  <span>
+                    I understand {editingUser.full_name} will gain or lose the permissions listed above.
+                  </span>
+                </label>
+              </div>
+            )}
+
             <label>Mobile (optional, E.164 without +)
               <input value={editForm.mobile} inputMode="tel" placeholder="e.g. 919876543210"
                 onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })} />
@@ -589,14 +887,18 @@ export default function UsersPage() {
             </label>
             <p className="muted" style={{ margin: 0, fontSize: '.8rem' }}>
               A password entered here is temporary: the account must choose its own on next
-              sign-in, and every existing session for it is signed out immediately. Both actions
-              are recorded in the audit log.
+              sign-in, and every existing session for it is signed out immediately. Role, mine and
+              account changes are all recorded in the audit log.
             </p>
             {editError && <div className="form-error" role="alert">{editError}</div>}
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn" type="button" onClick={() => setEditingUser(null)} disabled={editBusy}>Cancel</button>
-              <button className="btn btn-primary" type="submit" disabled={editBusy}>
-                {editBusy ? 'Saving…' : 'Save changes'}
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={editBusy || (pendingRoleChange && !roleConfirmed)}
+              >
+                {editBusy ? 'Saving…' : pendingRoleChange ? 'Confirm role change' : 'Save changes'}
               </button>
             </div>
           </form>
@@ -653,7 +955,7 @@ export default function UsersPage() {
             <tbody>
               <tr><th scope="row">User ID</th><td><code>{deleteTarget.id}</code></td></tr>
               <tr><th scope="row">Email</th><td><code>{deleteTarget.email}</code></td></tr>
-              <tr><th scope="row">Role</th><td>{ROLE_LABEL[deleteTarget.role] ?? deleteTarget.role}</td></tr>
+              <tr><th scope="row">Role</th><td>{roleLabel(deleteTarget.role)}</td></tr>
               <tr><th scope="row">Status</th><td>{deleteTarget.is_active ? 'Active' : 'Deactivated'}</td></tr>
             </tbody>
           </table>

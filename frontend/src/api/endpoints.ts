@@ -29,6 +29,7 @@ import type {
   RegisterVerifyResponse,
   RestrictedZone,
   RiskAssessment,
+  RoleCounts,
   SystemHealth,
   User,
   UserDeleteImpact,
@@ -168,6 +169,9 @@ export const actionsApi = {
 
 export const usersApi = {
   list: (params?: ListParams) => api.get<Paginated<User>>('/api/users', params),
+  /** True totals behind the role tabs (respects the active search). */
+  roleCounts: (params?: { q?: string }) =>
+    api.get<RoleCounts>('/api/users/role-counts', params),
   update: (id: string, body: Partial<User> & { password?: string }) =>
     api.patch<User>(`/api/users/${id}`, body),
   /** Soft delete retained: deactivate instead of destroying audit history. */
