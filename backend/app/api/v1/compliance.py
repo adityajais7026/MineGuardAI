@@ -5,9 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, visible_mine_ids
 from app.core.roles import write_access
 from app.core.security import get_current_user
-from app.database.models import Mine
+from app.database.models import Mine, User
 from app.database.session import get_db
 from app.schemas.common import PaginatedResponse
 from app.schemas.environmental_reading import EnvironmentalReadingResponse
@@ -29,6 +30,7 @@ DbSession = Annotated[Session, Depends(get_db)]
              dependencies=[Depends(write_access("compliance_engine"))])
 def ingest_reading_endpoint(
     db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
     mine_id: str,
     parameter: str = Query(min_length=1, max_length=50),
     value: float = Query(),
@@ -42,6 +44,7 @@ def ingest_reading_endpoint(
     Evaluation -> COMPLIANT / WARNING / VIOLATION -> alert (with dedupe).
     """
     try:
+        ensure_mine_in_scope(db, user, mine_id)
         return ingest_reading(db, mine_id=mine_id, parameter=parameter, value=value, unit=unit,
                               source=source, recorded_at=recorded_at)
     except ValueError as exc:
@@ -49,8 +52,9 @@ def ingest_reading_endpoint(
 
 
 @router.get("/evaluate/{mine_id}", response_model=list[EvaluationResult])
-def evaluate_mine(db: DbSession, mine_id: str):
+def evaluate_mine(db: DbSession, user: Annotated[User, Depends(get_current_user)], mine_id: str):
     """Re-evaluate a mine's readings from the last 7 days (display refresh)."""
+    ensure_mine_in_scope(db, user, mine_id)
     if db.get(Mine, mine_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Mine '{mine_id}' not found")
     return reevaluate_mine(db, mine_id)

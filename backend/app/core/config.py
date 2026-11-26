@@ -47,6 +47,30 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
 
+    # --- MSG91 OTP Widget (server-side only; NEVER exposed to the frontend) ---
+    # MSG91_AUTHKEY comes from .env and is verified present.
+    MSG91_AUTHKEY: str = ""
+    # The OTP Widget id (MSG91 panel -> OTP -> Widgets). The widget's own
+    # default SMS template/sender configuration delivers the OTP — no custom
+    # DLT template is required.
+    MSG91_WIDGET_ID: str = ""
+    MSG91_BASE_URL: str = "https://control.msg91.com"
+    MSG91_OTP_LENGTH: int = 6
+    MSG91_OTP_EXPIRY_MINUTES: int = 10
+    MSG91_OTP_MAX_ATTEMPTS: int = 5
+    MSG91_OTP_RESEND_COOLDOWN_SECONDS: int = 60
+    MSG91_SEND_TIMEOUT_SECONDS: int = 10
+    # Dev/test helper (below) is the only code path that consults a fixed
+    # code; see services/msg91.py TEST_OTP_CODE.
+    # Test helper (CI/dev): when True, /api/auth/... endpoints skip the real
+    # SMS call entirely. Never enable in production. Actual OTPs are always
+    # bcrypt-hashed at rest and never logged.
+    OTP_SMS_DISABLED: bool = False
+
+    # --- User invitations (link flow; no MSG91/SMS dependency) ---
+    # Link invitations expire this many hours after creation.
+    INVITATION_EXPIRY_HOURS: int = 24
+
     # --- Seeded admin (created by the seed command) ---
     SEED_ADMIN_EMAIL: str = "admin@mineguard.ai"
     SEED_ADMIN_PASSWORD: str = "Admin@123"
@@ -65,9 +89,80 @@ class Settings(BaseSettings):
     YOLO_FRAME_STRIDE: int = 5
     # Safety rule: persons detected in one frame/scene before a crowd alert.
     YOLO_CROWD_THRESHOLD: int = 4
+    # --- PPE two-stage thresholds (benchmark-validated, Part 4/5) -------------
+    # CAPTURE threshold: what the model may report at all (low -> candidate
+    # detections become visible). Defaults to YOLO_CONFIDENCE (current behaviour).
+    YOLO_CAPTURE_CONFIDENCE: float | None = None
+    # VIOLATION (alert) thresholds: a NO-* detection only becomes a violation
+    # event + alert when its confidence passes this bar. Defaults to
+    # YOLO_CONFIDENCE (current behaviour). Separate values per class are
+    # supported via PPE_THRESHOLDS_JSON; keys are lowercased model classes
+    # (e.g. "no-hardhat").
+    PPE_VIOLATION_CONFIDENCE: float | None = None
+    PPE_THRESHOLDS_JSON: str | None = None
+    # --- EXPERIMENTAL YOLO-World detector (OPT-IN; never the default) -------
+    # AI_DETECTOR="yolo_world" selects the open-vocabulary YOLO-World model
+    # (custom_yolov8s_mining.pt, six text classes) for image/video/live
+    # inference instead of the production Vyra model. Vyra remains production:
+    # "yolo" keeps selecting it with byte-identical behaviour.
+    AI_DETECTOR_YOLO_WORLD_MODEL_PATH: str = "ai/yolo/models/custom_yolov8s_mining.pt"
+
+    # --- Remote Vyra inference worker (Render Free cannot hold YOLOv8m) ------
+    # When AI_SERVICE_URL is set, ALL image/video/frame inference is delegated
+    # to the dedicated worker process, e.g. `https://<tunnel>/detect` behind
+    # AI_SERVICE_TOKEN (bearer) — the token is never logged or committed.
+    # Strict timeout (requirements: 10 s max); any failure returns an honest
+    # 503, never a fallback detection. Unset = pre-existing local behaviour.
+    AI_SERVICE_URL: str = ""
+    AI_SERVICE_TOKEN: str = ""
+    AI_SERVICE_TIMEOUT_SECONDS: int = 10
+
+    # --- Live multi-person anchor strategy (OPT-IN) -------------------------
+    # "default"      -> exactly the pre-anchor behaviour (Vyra only, global
+    #                   event cooldown, synchronous evidence upload).
+    # "person_anchor"-> live endpoint adds a COCO yolo11n PERSON anchor with
+    #                   ByteTrack IDs and per-person PPE attribution. PPE still
+    #                   comes ONLY from the configured Vyra model; policy code,
+    #                   thresholds, DB schema and upload detection are unchanged.
+    AI_DETECTOR_STRATEGY: str = "default"
+    # Anchor weights (COCO person detector) used only by the anchor strategy.
+    PERSON_ANCHOR_MODEL_PATH: str = "tmp_diag/alt_models/yolo11n.pt"
+
+    # --- Governance platform (Smart Governance & Compliance upgrade) ---
+    # AI capability providers. "none" = feature not connected; the UI shows an
+    # explicit UNAVAILABLE/NOT CONNECTED state instead of fake output.
+    OCR_PROVIDER: str = "none"
+    VOICE_PROVIDER: str = "none"
+    TRANSLATION_PROVIDER: str = "none"
+    # OPT-IN comparison switch: when set, the person_anchor strategy uses this
+    # model for PPE instead of the production one (benchmarking only — e.g.
+    # Hansung-PPE). Empty string = production Vyra (never changes by default).
+    PERSON_ANCHOR_PPE_MODEL_PATH: str = ""
+    # ADDITIVE per-person crop PPE inference (off by default; enable after the
+    # live diagnosis showed full-frame letterboxing hides head-level evidence).
+    # The hi-res crop pass costs ~0.8s/person on CPU, so by default it runs
+    # every 3rd frame of a session for the 2 largest (nearest) persons; the
+    # full-frame pass still runs on EVERY frame.
+    PERSON_ANCHOR_CROP_PPE: bool = False
+    PERSON_ANCHOR_CROP_IMGSZ: int = 1280
+    PERSON_ANCHOR_CROP_PADDING: float = 0.12
+    PERSON_ANCHOR_CROP_EVERY_N: int = 3
+    PERSON_ANCHOR_CROP_MAX_PERSONS: int = 2
+    # Temporal confirmation for live alerts (req. 11): alert only when the
+    # same (camera, person, event_type) violation is seen in N of the last M
+    # frames. N<=1 disables (single-frame alerting, ~0.6s alert latency kept).
+    LIVE_TEMPORAL_CONFIRM_N: int = 1
+    LIVE_TEMPORAL_CONFIRM_M: int = 3
+    PERSON_ANCHOR_CONF: float = 0.25
     # Upload limits (bytes) for /api/ai/detect endpoints.
     MAX_IMAGE_UPLOAD_MB: int = 10
     MAX_VIDEO_UPLOAD_MB: int = 100
+    # Live-webcam frame endpoint: per-frame upload cap (single JPEG, base64)
+    # and alert dedupe window (a live feed re-detecting the same violation
+    # every second must not spam the Alerts page; matches the 60-minute
+    # camera-pipeline dedupe used by uploads).
+    MAX_FRAME_UPLOAD_MB: int = 5
+    LIVE_EVENT_COOLDOWN_SECONDS: int = 60
     CAMERA_SNAPSHOT_DIR: str = "snapshots"
 
     # --- Supabase Storage (media uploads; requires SUPABASE_URL + key) ---

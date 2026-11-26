@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, visible_mine_ids
 from app.core.roles import write_access
 from app.core.security import get_current_user
-from app.database.models import ComplianceRule, EnvironmentalReading, Mine
+from app.database.models import ComplianceRule, EnvironmentalReading, Mine, User
 from app.database.session import get_db
 from app.schemas import EnvironmentalReadingCreate, EnvironmentalReadingResponse
 from app.schemas.common import PaginatedResponse
@@ -61,6 +62,7 @@ def _resolve_threshold(db: Session, mine_id: str, parameter: str) -> ComplianceR
 @router.get("", response_model=PaginatedResponse[EnvironmentalReadingResponse])
 def list_readings(
     db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_id: str | None = None,
@@ -71,10 +73,14 @@ def list_readings(
     sort: str = Query(default="recorded_at"),
     order: Literal["asc", "desc"] = "desc",
 ):
-    """List readings with mine/parameter/status/time-range filters."""
+    """List readings with mine/parameter/status/time-range filters (mine-scoped)."""
     query = select(EnvironmentalReading)
+    scope = visible_mine_ids(db, user)
     if mine_id:
+        ensure_mine_in_scope(db, user, mine_id)
         query = query.where(EnvironmentalReading.mine_id == mine_id)
+    elif scope is not None:
+        query = query.where(EnvironmentalReading.mine_id.in_(scope or ["__none__"]))
     if parameter:
         query = query.where(EnvironmentalReading.parameter == parameter)
     if reading_status:
@@ -95,11 +101,13 @@ def list_readings(
 
 @router.post("", response_model=EnvironmentalReadingResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(write_access("environment"))])
-def create_reading(db: DbSession, payload: EnvironmentalReadingCreate):
+def create_reading(db: DbSession, payload: EnvironmentalReadingCreate,
+                   user: Annotated[User, Depends(get_current_user)]):
     """Create a reading; threshold comes from the matching active compliance rule.
 
     The rule is linked via rule_id so Phase 5's engine can trace every reading.
     """
+    ensure_mine_in_scope(db, user, payload.mine_id)
     if db.get(Mine, payload.mine_id) is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown mine_id '{payload.mine_id}'.")
 
@@ -128,11 +136,15 @@ def create_reading(db: DbSession, payload: EnvironmentalReadingCreate):
 
 
 @router.get("/{reading_id}", response_model=EnvironmentalReadingResponse)
-def get_reading(db: DbSession, reading_id: str):
-    return service.get(db, reading_id)
+def get_reading(db: DbSession, reading_id: str, user: Annotated[User, Depends(get_current_user)]):
+    reading = service.get(db, reading_id)
+    ensure_mine_in_scope(db, user, reading.mine_id)
+    return reading
 
 
 @router.delete("/{reading_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("environment"))])
-def delete_reading(db: DbSession, reading_id: str):
+def delete_reading(db: DbSession, reading_id: str, user: Annotated[User, Depends(get_current_user)]):
+    reading = service.get(db, reading_id)
+    ensure_mine_in_scope(db, user, reading.mine_id)
     service.delete(db, reading_id)

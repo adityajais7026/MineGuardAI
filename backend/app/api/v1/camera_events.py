@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, scope_column, visible_mine_ids
 from app.core.roles import write_access
 from app.core.security import get_current_user
-from app.database.models import CameraEvent, Mine, RestrictedZone
+from app.database.models import CameraEvent, Mine, RestrictedZone, User
 from app.database.session import get_db
 from app.schemas import CameraEventCreate, CameraEventResponse, CameraEventUpdate
 from app.schemas.common import PaginatedResponse
@@ -28,6 +29,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 @router.get("", response_model=PaginatedResponse[CameraEventResponse])
 def list_events(
     db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_id: str | None = None,
@@ -53,14 +55,16 @@ def list_events(
         },
         sort=sort,
         order=order,
+        additional_filter=scope_column(CameraEvent.mine_id, visible_mine_ids(db, user)),
     )
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 
 @router.post("", response_model=CameraEventResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(write_access("camera_events"))])
-def create_event(db: DbSession, payload: CameraEventCreate):
+def create_event(db: DbSession, payload: CameraEventCreate, user: Annotated[User, Depends(get_current_user)]):
     """Create a camera event. Zone (if given) must belong to the same mine."""
+    ensure_mine_in_scope(db, user, payload.mine_id)
     if db.get(Mine, payload.mine_id) is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown mine_id '{payload.mine_id}'.")
     if payload.zone_id:
@@ -81,14 +85,17 @@ def create_event(db: DbSession, payload: CameraEventCreate):
 
 
 @router.get("/{event_id}", response_model=CameraEventResponse)
-def get_event(db: DbSession, event_id: str):
-    return service.get(db, event_id)
+def get_event(db: DbSession, event_id: str, user: Annotated[User, Depends(get_current_user)]):
+    event = service.get(db, event_id)
+    ensure_mine_in_scope(db, user, event.mine_id)
+    return event
 
 
 @router.patch("/{event_id}", response_model=CameraEventResponse,
                dependencies=[Depends(write_access("camera_events"))])
-def update_event(db: DbSession, event_id: str, payload: CameraEventUpdate):
+def update_event(db: DbSession, event_id: str, payload: CameraEventUpdate, user: Annotated[User, Depends(get_current_user)]):
     event = service.get(db, event_id)
+    ensure_mine_in_scope(db, user, event.mine_id)
     data = payload.model_dump(exclude_unset=True)
     if "zone_id" in data and data["zone_id"] is not None:
         zone = db.get(RestrictedZone, data["zone_id"])
@@ -106,5 +113,7 @@ def update_event(db: DbSession, event_id: str, payload: CameraEventUpdate):
 
 @router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("camera_events"))])
-def delete_event(db: DbSession, event_id: str):
+def delete_event(db: DbSession, event_id: str, user: Annotated[User, Depends(get_current_user)]):
+    event = service.get(db, event_id)
+    ensure_mine_in_scope(db, user, event.mine_id)
     service.delete(db, event_id)

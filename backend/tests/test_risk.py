@@ -13,8 +13,9 @@ def test_score_bounds_and_determinism(client):
     assert "not machine learning" in r1["disclaimer"].lower()
 
 
-def test_violations_increase_score(client):
+def test_violations_increase_score(client, as_role):
     base = client.get("/api/risk/mines/m-test-0001").json()["score"]
+    as_role("u-safe-0001")  # readings are an operational write
 
     # several violation readings in the last 7 days -> +2 each up to 20
     for value in (95.0, 99.0):
@@ -26,8 +27,9 @@ def test_violations_increase_score(client):
     assert after > base
 
 
-def test_overdue_actions_increase_score(client):
+def test_overdue_actions_increase_score(client, as_role):
     base = client.get("/api/risk/mines/m-test-0001").json()["score"]
+    as_role("u-safe-0001")  # incidents/actions are operational writes
 
     incident = client.post("/api/incidents", json={
         "mine_id": "m-test-0001", "title": "Risk test incident",

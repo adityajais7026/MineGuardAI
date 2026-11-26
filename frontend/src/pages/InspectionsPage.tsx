@@ -3,7 +3,7 @@ import { inspectionsApi } from '../api/endpoints'
 import { useApiResource } from '../hooks/useApiResource'
 import { ApiError } from '../api/client'
 import {
-  EmptyState, ErrorState, Loading, Modal, PageHeader, SimulatedDataNote, StatusBadge,
+  EmptyState, ErrorState, FlowSteps, Loading, Modal, PageHeader, SimulatedDataNote, StatusBadge,
 } from '../components/ui'
 
 const EMPTY_FORM = { mine_id: '', inspection_type: 'safety', scheduled_at: '' }
@@ -71,9 +71,17 @@ export default function InspectionsPage() {
                 <tr key={i.id}>
                   <td><code>{i.mine_id.slice(0, 12)}…</code></td>
                   <td>{i.inspection_type}</td>
-                  <td><StatusBadge value={i.status} /></td>
+                  <td>
+                    <StatusBadge value={i.status} />
+                    {i.review_status && i.review_status !== 'pending' && (
+                      <>
+                        {' '}<StatusBadge value={i.review_status} />
+                      </>
+                    )}
+                    <div style={{ marginTop: 4 }}><FlowSteps current={i.review_status || i.status} /></div>
+                  </td>
                   <td><small>{new Date(i.scheduled_at).toLocaleString()}</small></td>
-                  <td><StatusBadge value={i.compliance_result} /></td>
+                  <td>{i.compliance_result ? <StatusBadge value={i.compliance_result} /> : <span className="muted">not assessed</span>}</td>
                   <td className="table-actions">
                     {i.status === 'scheduled' && (
                       <button className="btn btn-sm" disabled={busyId === i.id}

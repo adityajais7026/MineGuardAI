@@ -16,6 +16,24 @@
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS frame_number INTEGER;
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS video_timestamp DOUBLE PRECISION;
 --   ALTER TABLE camera_events ADD COLUMN IF NOT EXISTS source_media_ref VARCHAR(500);
+--
+-- EXISTING DEPLOYMENTS (MSG91 SMS OTP phase): users gained a nullable `mobile`
+-- column and two new tables (otp_challenges, role_invitations). Apply with:
+--   database/migrations/2026-09-26_msg91_otp.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (user-invitations phase): role_invitations gained two
+-- nullable columns (token_hash, full_name) and a widened role CHECK. Apply with:
+--   database/migrations/2026-10-01_user_invitations.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (invitation-code phase): role_invitations gained the
+-- plaintext `code` column (creator-visible until used/expired/deleted), the
+-- `deleted_at` soft-delete column and a code lookup index. Apply with:
+--   database/migrations/2026-10-02_invitation_codes.sql  (idempotent)
+--
+-- EXISTING DEPLOYMENTS (live-detection mine-scope phase): users gained a
+-- `permitted_mine_ids` JSON column (backend mine-scoping for live webcam
+-- detection). Apply with:
+--   database/migrations/2026-10-03_live_detection_mine_scope.sql  (idempotent)
 -- ============================================================================
 
 BEGIN;
@@ -24,20 +42,88 @@ BEGIN;
 -- users  (local-auth credential store; supabase_user_id links to Supabase Auth)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-    id                VARCHAR(36)  PRIMARY KEY,
-    email             VARCHAR(255) NOT NULL,
-    full_name         VARCHAR(255) NOT NULL,
-    role              VARCHAR(40)  NOT NULL DEFAULT 'safety_officer',
-    hashed_password   VARCHAR(255),
-    supabase_user_id  VARCHAR(64),
-    is_active         BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    id                  VARCHAR(36)  PRIMARY KEY,
+    email               VARCHAR(255) NOT NULL,
+    full_name           VARCHAR(255) NOT NULL,
+    role                VARCHAR(40)  NOT NULL DEFAULT 'safety_officer',
+    hashed_password     VARCHAR(255),
+    supabase_user_id    VARCHAR(64),
+    mobile              VARCHAR(15),
+    -- Mines this user may run live detection in (JSON array of mine ids;
+    -- officers only — mine_manager scope comes from mines.manager_id).
+    permitted_mine_ids  JSON         NOT NULL DEFAULT '[]'::jsonb,
+    is_active           BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- Temporary-password workflow: set by an Administrator password reset;
+    -- all authenticated calls except /auth/me and /auth/change-password are
+    -- refused until the holder sets their own password.
+    must_change_password BOOLEAN     NOT NULL DEFAULT FALSE,
+    -- Session generation carried in every issued JWT; incrementing it revokes
+    -- all previously issued tokens (password reset/change, deactivation).
+    token_version       INTEGER      NOT NULL DEFAULT 0,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_users_role
         CHECK (role IN ('admin', 'mine_manager', 'safety_officer', 'environmental_officer'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email);
 CREATE UNIQUE INDEX IF NOT EXISTS ix_users_supabase_user_id ON users (supabase_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_users_mobile ON users (mobile);
+
+-- ----------------------------------------------------------------------------
+-- otp_challenges  (MSG91 OTP Widget verification state; provider request ids)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS otp_challenges (
+    id                  VARCHAR(36)  PRIMARY KEY,
+    subject             VARCHAR(36)  NOT NULL,
+    purpose             VARCHAR(20)  NOT NULL,
+    mobile              VARCHAR(15)  NOT NULL,
+    provider            VARCHAR(30)  NOT NULL DEFAULT 'msg91_widget',
+    provider_ref        VARCHAR(255),
+    attempts_left       INTEGER      NOT NULL DEFAULT 5,
+    attempts_used       INTEGER      NOT NULL DEFAULT 0,
+    request_count       INTEGER      NOT NULL DEFAULT 1,
+    first_requested_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    last_sent_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    expires_at          TIMESTAMPTZ  NOT NULL,
+    consumed_at         TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    last_error          VARCHAR(255),
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT ck_otp_purpose CHECK (purpose IN ('register', 'login'))
+);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_subject ON otp_challenges (subject);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_purpose ON otp_challenges (purpose);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_mobile ON otp_challenges (mobile);
+CREATE INDEX IF NOT EXISTS ix_otp_challenges_expires_at ON otp_challenges (expires_at);
+CREATE INDEX IF NOT EXISTS ix_otp_subject_purpose ON otp_challenges (subject, purpose);
+
+-- ----------------------------------------------------------------------------
+-- role_invitations  (admin-issued single-use invitations for privileged roles)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS role_invitations (
+    id             VARCHAR(36)  PRIMARY KEY,
+    role           VARCHAR(40)  NOT NULL,
+    code           VARCHAR(255),
+    code_hash      VARCHAR(255) NOT NULL,
+    token_hash     VARCHAR(255),
+    full_name      VARCHAR(255),
+    invited_by_id  VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
+    note           VARCHAR(255),
+    bound_email    VARCHAR(255),
+    bound_mobile   VARCHAR(15),
+    is_used        BOOLEAN      NOT NULL DEFAULT FALSE,
+    used_by_id     VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
+    used_at        TIMESTAMPTZ,
+    deleted_at     TIMESTAMPTZ,
+    expires_at     TIMESTAMPTZ  NOT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT ck_role_invitations_role CHECK (role IN ('admin', 'mine_manager', 'safety_officer', 'environmental_officer'))
+);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_role ON role_invitations (role);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_is_used ON role_invitations (is_used);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_code ON role_invitations (code);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_email ON role_invitations (bound_email);
+CREATE INDEX IF NOT EXISTS ix_role_invitations_bound_mobile ON role_invitations (bound_mobile);
 
 -- ----------------------------------------------------------------------------
 -- mines
@@ -296,6 +382,8 @@ COMMIT;
 -- tables locked down at the database level for defence in depth.
 -- ============================================================================
 ALTER TABLE users                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE otp_challenges       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE role_invitations     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mines                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_rules     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE environmental_readings ENABLE ROW LEVEL SECURITY;

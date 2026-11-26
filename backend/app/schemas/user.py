@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 UserRole = Literal["admin", "mine_manager", "safety_officer", "environmental_officer"]
 
@@ -17,6 +17,9 @@ class UserBase(BaseModel):
     full_name: str = Field(min_length=1, max_length=255)
     role: UserRole = "safety_officer"
     is_active: bool = True
+    # E.164-without-'+' verified mobile (MSG91 OTP login). Never accepted from
+    # ordinary updates; changes require OTP re-verification (future work).
+    mobile: str | None = Field(default=None, max_length=15)
 
 
 class UserCreate(UserBase):
@@ -30,6 +33,24 @@ class UserUpdate(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=72)
+    mobile: str | None = Field(default=None, max_length=15)
+    # Admin-managed mine scope for live detection (safety/environmental
+    # officers; mine_manager scope comes from mines.manager_id). Duplicates
+    # removed; order preserved (stable for the UI).
+    permitted_mine_ids: list[str] | None = None
+
+    @field_validator("permitted_mine_ids")
+    @classmethod
+    def _dedupe_mine_ids(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for mid in v:
+            if mid not in seen:
+                seen.add(mid)
+                out.append(mid)
+        return out
 
 
 class UserResponse(UserBase):
@@ -38,4 +59,25 @@ class UserResponse(UserBase):
     id: str = Field(default_factory=_uuid)
     created_at: datetime
     updated_at: datetime
+    # Mines this user may run live detection in (officers only; see
+    # services/mine_access.py). Read-only surface for the admin UI.
+    permitted_mine_ids: list[str] = []
+    # True while the account holds an administrator-issued temporary password.
+    # The UI must force a password change before anything else is usable.
+    must_change_password: bool = False
     # hashed_password is intentionally never exposed.
+
+
+class PasswordResetResponse(BaseModel):
+    """Result of an administrator password reset.
+
+    `temporary_password` is returned exactly once (in this response) so the
+    administrator can hand it to the account holder out of band. It is never
+    stored in plaintext, never written to the audit payload and never logged.
+    """
+
+    user_id: str
+    email: str
+    temporary_password: str
+    must_change_password: bool = True
+    sessions_revoked: bool = True

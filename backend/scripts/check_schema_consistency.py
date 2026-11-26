@@ -46,9 +46,19 @@ def parse_sql_tables(sql: str) -> dict:
             if fk:
                 fks.append((fk.group(1), fk.group(2)))
                 continue
+            # Inline FK style (e.g. role_invitations):
+            #   col  VARCHAR(36)  REFERENCES users(id) ON DELETE SET NULL,
+            # The column itself is still parsed by the column regex below.
+            inline_fk = re.match(
+                r"(\w+)\s+(?:VARCHAR\(\d+\)|TEXT|BOOLEAN|DOUBLE PRECISION|TIMESTAMPTZ|FLOAT|INTEGER|JSON)"
+                r"\s+REFERENCES\s+(\w+)\s*\(",
+                line,
+            )
+            if inline_fk:
+                fks.append((inline_fk.group(1), inline_fk.group(2)))
             # Column types used in schema.sql (whitelist keeps parsing exact)
             m = re.match(
-                r"(\w+)\s+(VARCHAR\(\d+\)|TEXT|BOOLEAN|DOUBLE PRECISION|TIMESTAMPTZ|FLOAT|INTEGER)(?=[\s,]|$)",
+                r"(\w+)\s+(VARCHAR\(\d+\)|TEXT|BOOLEAN|DOUBLE PRECISION|TIMESTAMPTZ|FLOAT|INTEGER|JSON)(?=[\s,]|$)",
                 line,
             )
             if m and m.group(1) not in {"PRIMARY", "UNIQUE", "FOREIGN", "CHECK"}:

@@ -46,8 +46,10 @@ def db_session(db_engine):
     session.add_all([
         models.User(id="u-admin-0001", email="admin@test.ai", full_name="Admin", role="admin", hashed_password="x"),
         models.User(id="u-mgr-0001", email="manager@test.ai", full_name="Manager", role="mine_manager", hashed_password="x"),
-        models.User(id="u-safe-0001", email="safety@test.ai", full_name="Safety", role="safety_officer", hashed_password="x"),
-        models.User(id="u-env-0001", email="env@test.ai", full_name="Env", role="environmental_officer", hashed_password="x"),
+        models.User(id="u-safe-0001", email="safety@test.ai", full_name="Safety", role="safety_officer", hashed_password="x",
+                    permitted_mine_ids=["m-test-0001"]),
+        models.User(id="u-env-0001", email="env@test.ai", full_name="Env", role="environmental_officer", hashed_password="x",
+                    permitted_mine_ids=["m-test-0001"]),
         models.Mine(id="m-test-0001", name="Test Mine", code="MINE-TST", mine_type="open_cast",
                     status="operational", location="Testville"),
         models.ComplianceRule(id="r-test-0001", name="PM2.5 limit", parameter="pm2_5", operator=">",
@@ -67,7 +69,11 @@ def db_session(db_engine):
 
 @pytest.fixture()
 def client(db_session):
-    """TestClient authenticated as admin (admin passes every role check)."""
+    """TestClient authenticated as the seeded administrator.
+
+    Administrators are NOT implicit superusers: role checks only pass where
+    `admin` is listed in WRITE_ROLES (platform-administration areas).
+    """
     def _override():
         yield db_session
 
@@ -90,6 +96,44 @@ def anon_client(db_session):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture()
+def grant_mine(db_session):
+    """Explicitly permit a user on extra mines (officer access is a DB list)."""
+
+    def _grant(user_id: str, *mine_ids: str):
+        user = db_session.get(models.User, user_id)
+        user.permitted_mine_ids = sorted(
+            set(list(user.permitted_mine_ids or []) + [m for m in mine_ids if m])
+        )
+        db_session.commit()
+        return user
+
+    return _grant
+
+
+@pytest.fixture()
+def make_mine(db_session, grant_mine):
+    """Create a mine directly (no admin API) and grant an officer access.
+
+    Operational tests act as an officer, who cannot create mines; building the
+    row in the database keeps those tests focused on the operation itself.
+    """
+    from uuid import uuid4
+
+    def _make(code: str, user_id: str = "u-safe-0001", name: str | None = None) -> str:
+        mine = models.Mine(
+            id=str(uuid4()), name=name or f"Test Mine {code}", code=code,
+            mine_type="open_cast", status="operational", location="Test",
+        )
+        db_session.add(mine)
+        db_session.commit()
+        if user_id:
+            grant_mine(user_id, mine.id)
+        return mine.id
+
+    return _make
 
 
 @pytest.fixture()

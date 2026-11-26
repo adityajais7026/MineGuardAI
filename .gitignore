@@ -19,6 +19,23 @@ snapshots/
 
 # AI model artifacts (never commit model weights)
 ai/yolo/models/*.pt
+
+# --- local AI inference worker (Phase 2): code committed, data/local-only ---
+# Real webcam demo snapshots + annotated test outputs = personal media, never
+# committed. Worker source (worker/, run_worker.py, test_worker.py, README) IS.
+ai/inference_worker/test_images/
+ai/inference_worker/inference_worker_test_output_*.png
+
+# --- local-only ML tooling & artifacts (never deploy, never publish) ---
+# Custom PPE training packages are huge (150 MB) and ship dataset binaries.
+# Weights + diagnostics stay on the local machine only.
+backend/tools/
+backend/tmp_diag/
+colab_training_package/
+colab_training_package_v2/
+colab_training_package.zip
+colab_training_package_v2.zip
+mineguardai_colab_datasets.zip
 *.onnx
 
 # Uploaded/annotated media (never commit camera media)
@@ -33,9 +50,28 @@ backend/media/
 .DS_Store
 Thumbs.db
 
+# Local-only backup / experimental artifacts & runtime pid files
+# (pre-commit safety: duplicates and unevaluated model weights never ship)
+*.bak
+*.pid
+yolo11n.pt
+backend/mineguardai.dev.db.bak-*
+
 # Logs
 logs/
 *.log
 npm-debug.log*
 *.tsbuildinfo
 .freebuff/
+.ai-tools/
+
+# --- local verification artifacts (screenshots, smoke reports, chat exports) ---
+# Kept on the developer's machine for review; never part of a release commit.
+artifacts/
+reports/
+.cloud-attachments/
+
+# --- local inference-worker runtime secrets (tunnel URL + bearer token) ---
+ai/inference_worker/.ai_worker_token
+ai/inference_worker/.tunnel_url
+

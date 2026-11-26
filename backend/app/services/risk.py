@@ -169,6 +169,10 @@ def compute_risk(db: Session, mine: Mine) -> RiskAssessment:
     )
 
 
-def compute_all_risks(db: Session) -> list[RiskAssessment]:
-    mines = db.scalars(select(Mine)).all()
+def compute_all_risks(db: Session, allowed_mine_ids: list[str] | None = None) -> list[RiskAssessment]:
+    """Assess all mines, optionally restricted to an explicit scope (mine isolation)."""
+    query = select(Mine)
+    if allowed_mine_ids is not None:
+        query = query.where(Mine.id.in_(allowed_mine_ids or ["__none__"]))
+    mines = db.scalars(query).all()
     return [compute_risk(db, m) for m in mines]

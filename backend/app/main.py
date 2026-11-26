@@ -54,6 +54,11 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(application)
 
+    # --- Additive schema self-heal (missing tables/columns only) ---
+    from app.database.auto_migrate import ensure_schema
+
+    ensure_schema(engine)
+
     # --- Local media serving (development storage backend only) ---
     # Supabase Storage uses signed URLs instead; this mount serves the
     # gitignored backend/snapshots/media directory when STORAGE falls back.

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { useAuth } from '../context/AuthContext'
 import type { Role } from '../api/types'
 
+export const PASSWORD_CHANGE_PATH = '/change-password'
+
 /** Redirects unauthenticated users to /login; optionally enforces roles. */
 export function RequireAuth({ children, roles }: { children: ReactNode; roles?: Role[] }) {
   const { user, loading } = useAuth()
@@ -10,6 +12,12 @@ export function RequireAuth({ children, roles }: { children: ReactNode; roles?: 
 
   if (loading) return <div className="page-loading">Restoring session…</div>
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  // An administrator-issued temporary password must be replaced before any
+  // other screen is usable. The backend enforces the same rule (HTTP 403), so
+  // this redirect is a convenience, not the security boundary.
+  if (user.must_change_password && location.pathname !== PASSWORD_CHANGE_PATH) {
+    return <Navigate to={PASSWORD_CHANGE_PATH} replace />
+  }
   if (roles && !roles.includes(user.role) && user.role !== 'admin') {
     return (
       <div className="page">

@@ -15,6 +15,7 @@ export default function CorrectiveActionsPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -61,20 +62,46 @@ export default function CorrectiveActionsPage() {
   if (loading) return <Loading />
   if (error) return <div className="page"><ErrorState message={error} onRetry={refetch} /></div>
 
+  const FILTERS = [
+    { key: '', label: 'All' },
+    { key: 'open_states', label: 'Open' },
+    { key: 'in_progress', label: 'In Progress' },
+    { key: 'completed', label: 'Completed' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'critical', label: 'Critical' },
+  ] as const
+  const filtered = (data?.items ?? []).filter((a) => {
+    if (!filter) return true
+    if (filter === 'open_states') return !['completed', 'cancelled'].includes(a.status)
+    if (filter === 'critical') return a.priority === 'critical'
+    return a.status === filter
+  })
+
   return (
     <div className="page">
       <PageHeader
         title="Corrective Actions"
-        subtitle="Actions linked to incidents and inspections — overdue items are highlighted"
+        subtitle="Actions linked to incidents and inspections — overdue items are highlighted and remain flagged until completed"
         actions={<button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ New action</button>}
       />
 
-      {(data?.items.length ?? 0) === 0 ? <EmptyState message="No corrective actions recorded." /> : (
+      <div className="filter-bar" role="group" aria-label="Filter actions">
+        {FILTERS.map((f) => (
+          <button key={f.key}
+            className={`btn btn-sm${filter === f.key ? ' btn-primary' : ''}`}
+            aria-pressed={filter === f.key}
+            onClick={() => setFilter(f.key)}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? <EmptyState title="No actions" message="No corrective actions match the selected filter." /> : (
         <div className="card">
           <table className="table">
             <thead><tr><th>Description</th><th>Linked to</th><th>Priority</th><th>Status</th><th>Due</th><th>Actions</th></tr></thead>
             <tbody>
-              {data!.items.map((a) => (
+              {filtered.map((a) => (
                 <tr key={a.id} className={a.status === 'overdue' ? 'row-overdue' : undefined}>
                   <td>{a.description}</td>
                   <td><small>{a.incident_id ? `incident ${a.incident_id.slice(0, 8)}…` : `inspection ${a.inspection_id?.slice(0, 8)}…`}</small></td>

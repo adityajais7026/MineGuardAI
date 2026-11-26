@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { PageHeader, Badge } from '../components/ui'
 
@@ -21,7 +22,10 @@ export default function ProfilePage() {
         <p><code>{user.email}</code></p>
         <p><Badge text={ROLE_LABEL[user.role] ?? user.role} tone="info" /></p>
         <p className="muted">Member since {new Date(user.created_at).toLocaleDateString()}</p>
-        <button className="btn" onClick={logout}>Log out</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+          <Link className="btn" to="/change-password">Change password</Link>
+          <button className="btn" onClick={logout}>Log out</button>
+        </div>
       </div>
       <p className="simulated-note">
         Authentication currently uses backend-issued JWTs. Supabase Auth adapter can be enabled

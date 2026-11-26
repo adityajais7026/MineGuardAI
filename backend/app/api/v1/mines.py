@@ -14,7 +14,9 @@ from app.database.models import (
     Inspection,
     Mine,
     RestrictedZone,
+    User,
 )
+from app.core.mine_scope import ensure_mine_in_scope, visible_mine_ids
 from app.core.roles import write_access
 from app.core.security import get_current_user
 from app.database.session import get_db
@@ -31,6 +33,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 @router.get("", response_model=PaginatedResponse[MineResponse])
 def list_mines(
     db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_status: str | None = Query(default=None, alias="status"),
@@ -38,7 +41,12 @@ def list_mines(
     sort: str = Query(default="created_at"),
     order: Literal["asc", "desc"] = "desc",
 ):
-    """List mines with optional status/type filters, sorting and pagination."""
+    """List mines with optional status/type filters, sorting and pagination.
+
+    Mine-level isolation: mine managers see only their mines; officers only
+    their permitted mines; admins see all.
+    """
+    scope = visible_mine_ids(db, user)
     items, total = service.list(
         db,
         skip=skip,
@@ -46,6 +54,7 @@ def list_mines(
         filters={"status": mine_status, "mine_type": mine_type},
         sort=sort,
         order=order,
+        additional_filter=None if scope is None else Mine.id.in_(scope),
     )
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 
@@ -65,14 +74,18 @@ def create_mine(db: DbSession, payload: MineCreate):
 
 
 @router.get("/{mine_id}", response_model=MineResponse)
-def get_mine(db: DbSession, mine_id: str):
-    return service.get(db, mine_id)
+def get_mine(db: DbSession, mine_id: str, user: Annotated[User, Depends(get_current_user)]):
+    mine = service.get(db, mine_id)
+    ensure_mine_in_scope(db, user, mine_id)
+    return mine
 
 
 @router.get("/{mine_id}/details", response_model=dict)
-def get_mine_details(db: DbSession, mine_id: str) -> dict[str, Any]:
+def get_mine_details(db: DbSession, mine_id: str,
+                     user: Annotated[User, Depends(get_current_user)]) -> dict[str, Any]:
     """Mine plus counts of its readings/events/alerts/incidents/inspections/zones."""
     mine = service.get(db, mine_id)
+    ensure_mine_in_scope(db, user, mine_id)
 
     def _count(model) -> int:
         return (
@@ -97,7 +110,9 @@ def get_mine_details(db: DbSession, mine_id: str) -> dict[str, Any]:
 
 @router.patch("/{mine_id}", response_model=MineResponse,
                dependencies=[Depends(write_access("mines"))])
-def update_mine(db: DbSession, mine_id: str, payload: MineUpdate):
+def update_mine(db: DbSession, mine_id: str, payload: MineUpdate,
+                user: Annotated[User, Depends(get_current_user)]):
+    ensure_mine_in_scope(db, user, mine_id)
     try:
         return service.update(db, mine_id, payload)
     except IntegrityError:
@@ -110,8 +125,10 @@ def update_mine(db: DbSession, mine_id: str, payload: MineUpdate):
 
 @router.put("/{mine_id}", response_model=MineResponse,
              dependencies=[Depends(write_access("mines"))])
-def replace_mine(db: DbSession, mine_id: str, payload: MineCreate):
+def replace_mine(db: DbSession, mine_id: str, payload: MineCreate,
+                 user: Annotated[User, Depends(get_current_user)]):
     """Full replace (PUT semantics): every field must be provided."""
+    ensure_mine_in_scope(db, user, mine_id)
     service.get(db, mine_id)  # 404 if missing
     try:
         entity = service.update(db, mine_id, payload)
@@ -126,5 +143,6 @@ def replace_mine(db: DbSession, mine_id: str, payload: MineCreate):
 
 @router.delete("/{mine_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("mines"))])
-def delete_mine(db: DbSession, mine_id: str):
+def delete_mine(db: DbSession, mine_id: str, user: Annotated[User, Depends(get_current_user)]):
+    ensure_mine_in_scope(db, user, mine_id)
     service.delete(db, mine_id)

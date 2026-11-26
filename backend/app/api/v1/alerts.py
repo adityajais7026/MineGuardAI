@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.mine_scope import ensure_mine_in_scope, scope_column, visible_mine_ids
 from app.core.roles import write_access
 from app.core.security import get_current_user
 from app.database.models import Alert, User
@@ -27,6 +28,7 @@ def _validate_assignee(db: Session, assigned_to_id: str | None) -> None:
 @router.get("", response_model=PaginatedResponse[AlertResponse])
 def list_alerts(
     db: DbSession,
+    user: Annotated[User, Depends(get_current_user)],
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=200),
     mine_id: str | None = None,
@@ -50,13 +52,16 @@ def list_alerts(
         },
         sort=sort,
         order=order,
+        additional_filter=scope_column(Alert.mine_id, visible_mine_ids(db, user)),
     )
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 
 @router.post("", response_model=AlertResponse, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(write_access("alerts"))])
-def create_alert(db: DbSession, payload: AlertCreate):
+def create_alert(db: DbSession, payload: AlertCreate,
+                 user: Annotated[User, Depends(get_current_user)]):
+    ensure_mine_in_scope(db, user, payload.mine_id)
     _validate_assignee(db, payload.assigned_to_id)
     alert = Alert(**payload.model_dump())
     db.add(alert)
@@ -66,19 +71,23 @@ def create_alert(db: DbSession, payload: AlertCreate):
 
 
 @router.get("/{alert_id}", response_model=AlertResponse)
-def get_alert(db: DbSession, alert_id: str):
-    return service.get(db, alert_id)
+def get_alert(db: DbSession, alert_id: str, user: Annotated[User, Depends(get_current_user)]):
+    alert = service.get(db, alert_id)
+    ensure_mine_in_scope(db, user, alert.mine_id)
+    return alert
 
 
 @router.patch("/{alert_id}", response_model=AlertResponse,
                dependencies=[Depends(write_access("alerts"))])
-def update_alert(db: DbSession, alert_id: str, payload: AlertUpdate):
+def update_alert(db: DbSession, alert_id: str, payload: AlertUpdate,
+                 user: Annotated[User, Depends(get_current_user)]):
     """Acknowledge/assign/resolve an alert.
 
     Transition rules: timestamps set server-side; resolved alerts are final;
     resolution requires the alert to have been acknowledged first.
     """
     alert = service.get(db, alert_id)
+    ensure_mine_in_scope(db, user, alert.mine_id)
     data = payload.model_dump(exclude_unset=True)
 
     if "assigned_to_id" in data:
@@ -110,5 +119,7 @@ def update_alert(db: DbSession, alert_id: str, payload: AlertUpdate):
 
 @router.delete("/{alert_id}", status_code=status.HTTP_204_NO_CONTENT,
                 dependencies=[Depends(write_access("alerts"))])
-def delete_alert(db: DbSession, alert_id: str):
+def delete_alert(db: DbSession, alert_id: str, user: Annotated[User, Depends(get_current_user)]):
+    alert = service.get(db, alert_id)
+    ensure_mine_in_scope(db, user, alert.mine_id)
     service.delete(db, alert_id)

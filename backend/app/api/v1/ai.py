@@ -28,14 +28,41 @@ DbSession = Annotated[Session, Depends(get_db)]
 @router.get("/detector")
 def detector_info():
     """Active detector backends. Reports REAL YOLO availability honestly:
-    'simulated' means no CV model runs; yolo.available means real inference works."""
+    'simulated' means no CV model runs; yolo.available means real inference works.
+
+    REMOTE MODE (AI_SERVICE_URL set): inference is delegated to the AI worker
+    (see app/services.detectors.remote_vyra). The backend then must NEVER load
+    PyTorch/Ultralytics in-process (Render Free 512 MB), so the local Yolo
+    info is reported WITHOUT probing the weights — the local model_info()
+    call would otherwise force-load torch as a side effect of a status probe.
+    """
     simulated = get_detector().health()
+    if settings.AI_SERVICE_URL:
+        from app.services.detectors.remote_vyra import get_remote_vyra_service
+        remote = get_remote_vyra_service()
+        return {
+            "configured": "remote_worker",
+            "simulated": simulated,
+            "yolo": {
+                "detector": "YOLODetector", "source": "yolo", "available": False,
+                "status": "delegated",
+                "error": "inference runs on the remote AI worker (AI_SERVICE_URL)",
+            },
+            "yolo_world": {
+                "detector": "YOLOWorldDetector", "source": "yolo_world",
+                "available": False, "experimental": True,
+                "error": "delegated to the remote AI worker",
+            },
+            **remote.model_info(),
+        }
     from app.services.yolo_detection import get_yolo_service
+    from app.services.detectors.yolo_world import get_yolo_world_service
 
     return {
         "configured": settings.AI_DETECTOR,
         "simulated": simulated,
         "yolo": get_yolo_service().model_info(),
+        "yolo_world": get_yolo_world_service().model_info(),
     }
 
 

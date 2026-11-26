@@ -8,6 +8,14 @@ export interface Paginated<T> {
 }
 
 export type Role = 'admin' | 'mine_manager' | 'safety_officer' | 'environmental_officer'
+
+/** Directory totals per role, used by the Users page tabs. */
+export interface RoleCounts {
+  total: number
+  by_role: Partial<Record<Role, number>>
+  active: number
+  inactive: number
+}
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 
 export interface User {
@@ -15,15 +23,133 @@ export interface User {
   email: string
   full_name: string
   role: Role
+  /** Verified mobile (digits incl. country code); present after OTP registration. */
+  mobile?: string | null
+  /** Mines this user may run live detection in (officers; admin-managed).
+   *  mine_manager scope comes from mines.manager_id instead; admin unrestricted. */
+  permitted_mine_ids?: string[]
   is_active: boolean
+  /** True while the account holds an administrator-issued temporary password:
+   *  the backend refuses every call except /auth/me and /auth/change-password. */
+  must_change_password?: boolean
   created_at: string
   updated_at: string
+}
+
+/** Returned once by an administrator password reset (never retrievable again). */
+export interface PasswordResetResult {
+  user_id: string
+  email: string
+  temporary_password: string
+  must_change_password: boolean
+  sessions_revoked: boolean
 }
 
 export interface LoginResponse {
   access_token: string
   token_type: string
   user: User
+}
+
+// ---- MSG91 SMS OTP auth flows (same JWT auth system) ----
+
+export interface OtpSendResponse {
+  mobile_masked: string
+  cooldown_seconds: number
+  expires_in_minutes: number
+}
+
+export interface LoginOtpStartResponse {
+  /** false -> account has no registered mobile; use classic login instead. */
+  otp_required: boolean
+  mobile_masked: string | null
+  cooldown_seconds: number | null
+  expires_in_minutes: number | null
+}
+
+export interface RegisterVerifyResponse {
+  token: string
+  mobile_masked: string
+  expires_in_minutes: number
+}
+
+/**
+ * Roles that can be granted by an admin-issued invitation code. There is no
+ * public registration: every new account is created through a code whose
+ * invitation record (never the client) decides the role.
+ */
+export type InvitableRole = Role
+export type InvitationStatus = 'Active' | 'Used' | 'Expired' | 'Deleted'
+
+/** Returned when the admin creates or regenerates an invitation code. */
+export interface InvitationCreated {
+  id: string
+  role: Role
+  full_name: string
+  email: string
+  /** The shareable code — stays visible in the management list until the
+   *  invitation is used, expired or deleted (never hidden after creation). */
+  code: string
+  expires_at: string
+}
+
+export interface InvitationSummary {
+  id: string
+  role: Role
+  full_name: string
+  email: string
+  /** Plaintext code while it exists (legacy rows may have none). */
+  code: string | null
+  status: InvitationStatus
+  created_by: string | null
+  created_at: string
+  expires_at: string
+}
+
+/** Public pre-flight: what a valid code+email pair may show before the OTP step. */
+export interface InvitationValidate {
+  role: Role
+  full_name: string
+  expires_at: string
+}
+
+/** Final registration step: OTP-verified token + mandatory invitation code.
+ *  The invitation record (server-side) decides email, full name and role. */
+export interface RegisterCompleteRequest {
+  token: string
+  email: string
+  password: string
+  invitation_code: string
+}
+
+/** Successful registration always returns the same JWT shape as login. */
+export type RegisterCompleteResponse = LoginResponse
+
+export interface DeleteUserReport {
+  detail: string
+  user_id: string
+  email: string
+  role: Role
+  detached: Record<string, number>
+  deleted: Record<string, number>
+}
+
+export interface UserDeleteImpact {
+  user_id: string
+  email: string
+  full_name: string
+  role: Role
+  is_active: boolean
+  has_mobile: boolean
+  has_password: boolean
+  affected: {
+    mines_managed: number
+    incidents_reported: number
+    inspections_led: number
+    alerts_assigned: number
+    corrective_actions_assigned: number
+    pending_invitations_to_revoke: number
+  }
 }
 
 export interface Mine {
@@ -151,6 +277,9 @@ export interface Inspection {
   notes: string | null
   created_at: string
   updated_at: string
+  /** Governance review workflow (nullable until first review action). */
+  review_status?: 'pending' | 'under_review' | 'approved' | 'closed' | 'rejected' | null
+  review_notes?: string | null
 }
 
 export interface CorrectiveAction {
@@ -210,6 +339,88 @@ export interface RiskAssessment {
   factors: RiskFactor[]
   counts: Record<string, number>
   disclaimer: string
+}
+
+// ---- Platform administration (admin-only API) ----
+
+export interface AdminActivityEvent {
+  id: string
+  seq: number
+  created_at: string
+  actor_role: string | null
+  action: string
+  entity_type: string
+  entity_id: string | null
+  mine_id: string | null
+}
+
+export interface AdminOverview {
+  mines: {
+    total: number
+    active: number
+    inactive: number
+    by_status: Record<string, number>
+  }
+  users: {
+    total: number
+    active: number
+    inactive: number
+    by_role: Record<string, number>
+  }
+  devices: {
+    total: number
+    active: number
+    inactive: number
+    online: number
+    never_connected: number
+    online_window_minutes: number
+  }
+  invitations: { pending: number }
+  audit: { entries: number }
+  recent_activity: AdminActivityEvent[]
+  generated_at: string
+}
+
+export interface HealthComponent {
+  status: string
+  detail?: string
+  provider?: string
+  engine?: string
+  version?: string
+  configured?: boolean
+}
+
+export interface SystemHealth {
+  api: HealthComponent
+  database: HealthComponent
+  ai_worker: HealthComponent
+  storage: HealthComponent
+  integrations: Record<string, HealthComponent>
+  error_log: HealthComponent
+  checked_at: string
+}
+
+export interface AdminRoleEntry {
+  role: Role
+  label: string
+  users: number
+  mine_access: string
+  write_areas: string[]
+}
+
+export interface AdminRolesResponse {
+  roles: AdminRoleEntry[]
+  write_matrix: Record<string, string[]>
+  notes: string[]
+}
+
+export interface PlatformConfig {
+  editable: boolean
+  note: string
+  platform: Record<string, string | number | boolean>
+  registration: Record<string, string | number | boolean | string[]>
+  session_security: Record<string, string | number | boolean>
+  platform_preferences: Record<string, string | number | boolean>
 }
 
 export interface DashboardSummary {

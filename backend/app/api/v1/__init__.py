@@ -1,5 +1,6 @@
 """All v1 API routers, aggregated for registration in main.py."""
 from app.api.v1 import (
+    admin,
     alerts,
     ai,
     auth,
@@ -10,16 +11,21 @@ from app.api.v1 import (
     dashboard,
     detect,
     environmental_readings,
+    governance,
     incidents,
     inspections,
+    live_detect,
     mines,
     restricted_zones,
     risk,
+    user_management,
     users,
 )
 
 all_routers = [
     auth.router,
+    admin.router,  # platform administration (admin-only, read-mostly)
+    user_management.router,  # static /users routes must precede users' /{user_id}
     users.router,
     mines.router,
     compliance_rules.router,
@@ -29,12 +35,30 @@ all_routers = [
     dashboard.router,
     ai.router,
     detect.router,
+    live_detect.router,
     restricted_zones.router,
     camera_events.router,
     alerts.router,
     incidents.router,
     inspections.router,
     corrective_actions.router,
+    # Smart Governance & Compliance platform (additive)
+    governance.templates_router,
+    governance.gov_inspections_router,
+    governance.evidence_router,
+    governance.compliance_router,
+    governance.geofence_router,
+    governance.workers_router,
+    governance.shifts_router,
+    governance.contractors_router,
+    governance.emergency_router,
+    governance.telemetry_router,
+    governance.risk_router,
+    governance.reports_router,
+    governance.audit_router,
+    governance.notifications_router,
+    governance.sync_router,
+    governance.ai_router,
 ]
 
 __all__ = ["all_routers"]
